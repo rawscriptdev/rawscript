@@ -1,0 +1,17 @@
+{
+  "name": "rawscript",
+  "version": "0.1.0",
+  "description": "TypeScript in the browser. Zero install. Zero config. Zero dependencies.",
+  "type": "module",
+  "main": "dist/rawscript.js",
+  "files": ["dist/"],
+  "dependencies": {},
+  "devDependencies": {
+    "esbuild": "^0.20.2",
+    "typescript": "^5.4.0"
+  },
+  "scripts": {
+    "build": "node build.js",
+    "typecheck": "tsc --noEmit"
+  }
+}
