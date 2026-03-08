@@ -10,7 +10,7 @@ async function handleFetch(event: FetchEvent): Promise<Response> {
     const source = await response.text()
     const transpiled = await transpile(source, url.pathname)
     return new Response(transpiled, {
-      headers: { 'Content-Type': 'application/javascript' },
+      headers: { 'Content-Type': 'application/javascript; charset=utf-8' },
     })
   }
 
