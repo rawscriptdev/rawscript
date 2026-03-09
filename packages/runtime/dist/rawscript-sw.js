@@ -25,8 +25,11 @@ async function transpile(source, filename) {
 // src/sw.ts
 async function handleFetch(event) {
   const url = new URL(event.request.url);
-  if (url.pathname.endsWith(".ts") || url.pathname.endsWith(".tsx")) {
+  if (event.request.method === "GET" && (url.pathname.endsWith(".ts") || url.pathname.endsWith(".tsx"))) {
     const response = await fetch(event.request);
+    if (!response.ok) {
+      return response;
+    }
     const source = await response.text();
     const transpiled = await transpile(source, url.pathname);
     return new Response(transpiled, {
