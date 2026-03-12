@@ -1,6 +1,15 @@
 declare const self: ServiceWorkerGlobalScope
 
 import { transpile } from './transpiler.js'
+import { rewriteImports } from './resolver.js'
+
+let knownImportmap: Record<string, string> = {}
+
+self.addEventListener('message', (event: MessageEvent) => {
+  if (event.data?.type === 'IMPORTMAP') {
+    knownImportmap = event.data.importmap ?? {}
+  }
+})
 
 async function handleFetch(event: FetchEvent): Promise<Response> {
   const url = new URL(event.request.url)
@@ -17,8 +26,10 @@ async function handleFetch(event: FetchEvent): Promise<Response> {
       return response
     }
     const source = await response.text()
-    const transpiled = await transpile(source, url.pathname)
-    return new Response(transpiled, {
+    // TODO v0.5.0: detect jsxImportSource from knownImportmap
+    const js = await transpile(source, url.pathname)
+    const rewritten = rewriteImports(js, knownImportmap)
+    return new Response(rewritten, {
       headers: { 'Content-Type': 'application/javascript; charset=utf-8' },
     })
   }
