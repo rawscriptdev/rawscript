@@ -14,8 +14,9 @@ async function ensureInitialized(): Promise<void> {
 
 export async function transpile(source: string, filename: string): Promise<string> {
   await ensureInitialized()
+  const loader = filename.endsWith('.tsx') ? 'tsx' : 'ts'
   const result = await esbuild.transform(source, {
-    loader: 'ts',
+    loader,
     format: 'esm',
     target: 'esnext',
     sourcefile: filename,
