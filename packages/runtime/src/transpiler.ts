@@ -12,7 +12,19 @@ async function ensureInitialized(): Promise<void> {
   await initPromise
 }
 
-export async function transpile(source: string, filename: string): Promise<string> {
+export interface JsxConfig {
+  jsx?: 'transform' | 'automatic' | 'preserve'
+  jsxFactory?: string
+  jsxFragment?: string
+  jsxImportSource?: string
+  jsxDev?: boolean
+}
+
+export async function transpile(
+  source: string,
+  filename: string,
+  jsxConfig: JsxConfig = {}
+): Promise<string> {
   await ensureInitialized()
   const loader = filename.endsWith('.tsx') ? 'tsx' : 'ts'
   const result = await esbuild.transform(source, {
@@ -21,6 +33,7 @@ export async function transpile(source: string, filename: string): Promise<strin
     target: 'esnext',
     sourcefile: filename,
     sourcemap: 'inline',
+    ...jsxConfig,
   })
   return result.code
 }
