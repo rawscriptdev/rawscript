@@ -1,13 +1,16 @@
 declare const self: ServiceWorkerGlobalScope
 
 import { transpile, type JsxConfig } from './transpiler.js'
-import { rewriteImports } from './resolver.js'
-import { fetchTsConfig, getJsxOptionsFromTsconfig, unsupportedOptionWarnings, type TsConfig } from './tsconfig.js'
+import { rewriteImports, mapBareImports, collectImportSpecifiers } from './resolver.js'
+import { fetchTsConfig, getJsxOptionsFromTsconfig, applyPaths, unsupportedOptionWarnings, type TsConfig } from './tsconfig.js'
 import { buildCompileDiagnostic, type CompileDiagnostic } from './diagnostics.js'
 
 let knownImportmap: Record<string, string> = {}
 let configState: { tsconfig: TsConfig | null; at: number } | null = null
 const CONFIG_TTL_MS = 5000
+
+/** Module graph: imported module path -> importer path (for error chains). */
+const moduleGraph = new Map<string, string>()
 
 self.addEventListener('message', (event: MessageEvent) => {
   if (event.data?.type === 'IMPORTMAP') {
@@ -81,9 +84,22 @@ async function handleFetch(event: FetchEvent): Promise<Response> {
       return response
     }
     const source = await response.text()
-    const { jsxConfig } = await getTsconfigState(url.pathname)
+    const { tsconfig, jsxConfig } = await getTsconfigState(url.pathname)
     try {
-      const js = await transpile(source, url.pathname, jsxConfig)
+      let toTranspile = source
+      if (tsconfig) {
+        const mapped = mapBareImports(source, (specifier) => {
+          if (specifier in knownImportmap) return null
+          return applyPaths(specifier, tsconfig, url.pathname)
+        })
+        if (mapped !== source) toTranspile = mapped
+      }
+
+      // Record the module graph from the raw source BEFORE transpiling so a
+      // failing module's importers are already known when its error is raised.
+      recordModuleGraph(url.pathname, source)
+
+      const js = await transpile(toTranspile, url.pathname, jsxConfig)
       const rewritten = rewriteImports(js, knownImportmap)
       return new Response(rewritten, {
         headers: { 'Content-Type': 'application/javascript; charset=utf-8' },
@@ -94,6 +110,7 @@ async function handleFetch(event: FetchEvent): Promise<Response> {
         file: url.pathname,
         message,
         source,
+        chain: getImportChain(url.pathname),
       })
       notifyClient({ type: 'TRANSPILE_ERROR', ...diagnostic })
       return transpileErrorResponse(diagnostic)
@@ -101,6 +118,33 @@ async function handleFetch(event: FetchEvent): Promise<Response> {
   }
 
   return fetch(event.request)
+}
+
+/** Record module -> imports so diagnostics can show the dependency chain. */
+function recordModuleGraph(modulePath: string, rewritten: string): void {
+  if (moduleGraph.size > 20000) moduleGraph.clear()
+  const imports = collectImportSpecifiers(rewritten)
+  for (const spec of imports) {
+    if (spec.startsWith('./') || spec.startsWith('../')) {
+      const imported = new URL(spec, new URL(modulePath, self.location.origin))
+      moduleGraph.set(imported.pathname, modulePath)
+    }
+  }
+}
+
+/** Walk the module graph from a failing module back to its importer. */
+function getImportChain(file: string): string[] {
+  const chain: string[] = [file]
+  let current = file
+  let depth = 0
+  while (depth < 50) {
+    const importer = moduleGraph.get(current)
+    if (!importer) break
+    chain.unshift(importer)
+    current = importer
+    depth++
+  }
+  return chain
 }
 
 /**
