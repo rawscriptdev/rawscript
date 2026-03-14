@@ -1,11 +1,13 @@
 import { showLoadingIndicator, hideLoadingIndicator } from './loader.js'
 import { initBroadcastChannel } from './hmr.js'
+import { DebugPanel } from './debugpanel.js'
 
 // TODO v0.9.0: make this configurable via data-sw-path attribute
 const SW_PATH = '/rawscript-sw.js'
 
 let reloadScheduled = false
 let hmrChannel: BroadcastChannel | null = null
+let debugPanel: DebugPanel | null = null
 
 /** Reload at most once per page life — duplicate reloads are never valid. */
 function reloadOnce(): void {
@@ -41,5 +43,6 @@ if ('serviceWorker' in navigator) {
     }
     hideLoadingIndicator()
     hmrChannel = initBroadcastChannel()
+    debugPanel = new DebugPanel()
   })
 }
