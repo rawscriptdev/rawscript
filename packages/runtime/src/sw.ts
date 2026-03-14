@@ -2,7 +2,7 @@ declare const self: ServiceWorkerGlobalScope
 
 import { transpile, type JsxConfig } from './transpiler.js'
 import { rewriteImports } from './resolver.js'
-import { fetchTsConfig, getJsxOptionsFromTsconfig, type TsConfig } from './tsconfig.js'
+import { fetchTsConfig, getJsxOptionsFromTsconfig, unsupportedOptionWarnings, type TsConfig } from './tsconfig.js'
 
 let knownImportmap: Record<string, string> = {}
 let configState: { tsconfig: TsConfig | null; at: number } | null = null
@@ -44,6 +44,9 @@ async function getTsconfigState(pathname: string): Promise<{ tsconfig: TsConfig 
   let tsconfig: TsConfig | null = null
   try {
     tsconfig = await fetchTsConfig(pathname)
+    for (const warning of unsupportedOptionWarnings(tsconfig)) {
+      notifyClient({ type: 'CONFIG_WARNING', option: warning.option, message: warning.message })
+    }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     notifyClient({ type: 'CONFIG_ERROR', file: '/tsconfig.json', message })
