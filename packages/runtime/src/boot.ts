@@ -1,7 +1,11 @@
+import { showLoadingIndicator, hideLoadingIndicator } from './loader.js'
+import { initBroadcastChannel } from './hmr.js'
+
 // TODO v0.9.0: make this configurable via data-sw-path attribute
 const SW_PATH = '/rawscript-sw.js'
 
 let reloadScheduled = false
+let hmrChannel: BroadcastChannel | null = null
 
 /** Reload at most once per page life — duplicate reloads are never valid. */
 function reloadOnce(): void {
@@ -22,6 +26,7 @@ function sendImportmapToSW(sw: ServiceWorker) {
 }
 
 if ('serviceWorker' in navigator) {
+  showLoadingIndicator()
   navigator.serviceWorker.register(SW_PATH, { type: 'module' }).then((reg) => {
     if (reg.active) {
       sendImportmapToSW(reg.active)
@@ -34,5 +39,7 @@ if ('serviceWorker' in navigator) {
         }
       })
     }
+    hideLoadingIndicator()
+    hmrChannel = initBroadcastChannel()
   })
 }
