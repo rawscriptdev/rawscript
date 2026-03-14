@@ -2,8 +2,11 @@ declare const self: ServiceWorkerGlobalScope
 
 import { transpile, type JsxConfig } from './transpiler.js'
 import { rewriteImports } from './resolver.js'
+import { fetchTsConfig, getJsxOptionsFromTsconfig, type TsConfig } from './tsconfig.js'
 
 let knownImportmap: Record<string, string> = {}
+let configState: { tsconfig: TsConfig | null; at: number } | null = null
+const CONFIG_TTL_MS = 5000
 
 self.addEventListener('message', (event: MessageEvent) => {
   if (event.data?.type === 'IMPORTMAP') {
@@ -27,6 +30,38 @@ function getJsxConfig(): JsxConfig {
   return { jsx: 'automatic', jsxImportSource: 'react' }
 }
 
+/**
+ * Read tsconfig.json (TTL-cached so dev edits are picked up after a reload).
+ * Explicit tsconfig JSX settings take precedence over importmap inference.
+ */
+async function getTsconfigState(pathname: string): Promise<{ tsconfig: TsConfig | null; jsxConfig: JsxConfig }> {
+  const now = Date.now()
+  if (configState && now - configState.at < CONFIG_TTL_MS) {
+    const jsxConfig = getJsxOptionsFromTsconfig(configState.tsconfig) ?? getJsxConfig()
+    return { tsconfig: configState.tsconfig, jsxConfig }
+  }
+
+  let tsconfig: TsConfig | null = null
+  try {
+    tsconfig = await fetchTsConfig(pathname)
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    notifyClient({ type: 'CONFIG_ERROR', file: '/tsconfig.json', message })
+  }
+  configState = { tsconfig, at: now }
+
+  const jsxConfig = getJsxOptionsFromTsconfig(tsconfig) ?? getJsxConfig()
+  return { tsconfig, jsxConfig }
+}
+
+function notifyClient(data: Record<string, unknown>): void {
+  self.clients.matchAll({ type: 'window' }).then((clients) => {
+    for (const client of clients) {
+      client.postMessage(data)
+    }
+  })
+}
+
 async function handleFetch(event: FetchEvent): Promise<Response> {
   const url = new URL(event.request.url)
 
@@ -42,7 +77,8 @@ async function handleFetch(event: FetchEvent): Promise<Response> {
       return response
     }
     const source = await response.text()
-    const js = await transpile(source, url.pathname, getJsxConfig())
+    const { jsxConfig } = await getTsconfigState(url.pathname)
+    const js = await transpile(source, url.pathname, jsxConfig)
     const rewritten = rewriteImports(js, knownImportmap)
     return new Response(rewritten, {
       headers: { 'Content-Type': 'application/javascript; charset=utf-8' },
