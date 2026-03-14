@@ -1,6 +1,7 @@
 import { showLoadingIndicator, hideLoadingIndicator } from './loader.js'
 import { initBroadcastChannel } from './hmr.js'
 import { DebugPanel } from './debugpanel.js'
+import { runFallback } from './fallback.js'
 
 // TODO v0.9.0: make this configurable via data-sw-path attribute
 const SW_PATH = '/rawscript-sw.js'
@@ -29,20 +30,29 @@ function sendImportmapToSW(sw: ServiceWorker) {
 
 if ('serviceWorker' in navigator) {
   showLoadingIndicator()
-  navigator.serviceWorker.register(SW_PATH, { type: 'module' }).then((reg) => {
-    if (reg.active) {
-      sendImportmapToSW(reg.active)
-    }
-    if (reg.installing) {
-      reg.installing.addEventListener('statechange', (e) => {
-        if ((e.target as ServiceWorker).state === 'activated') {
-          sendImportmapToSW(e.target as ServiceWorker)
-          reloadOnce()
-        }
-      })
-    }
-    hideLoadingIndicator()
-    hmrChannel = initBroadcastChannel()
-    debugPanel = new DebugPanel()
-  })
+  navigator.serviceWorker
+    .register(SW_PATH, { type: 'module' })
+    .then((reg) => {
+      if (reg.active) {
+        sendImportmapToSW(reg.active)
+      }
+      if (reg.installing) {
+        reg.installing.addEventListener('statechange', (e) => {
+          if ((e.target as ServiceWorker).state === 'activated') {
+            sendImportmapToSW(e.target as ServiceWorker)
+            reloadOnce()
+          }
+        })
+      }
+      hideLoadingIndicator()
+      hmrChannel = initBroadcastChannel()
+      debugPanel = new DebugPanel()
+    })
+    .catch((err) => {
+      console.warn('rawscript: Service Worker registration failed, using Blob URL fallback.', err)
+      hideLoadingIndicator()
+      runFallback()
+    })
+} else {
+  runFallback()
 }
