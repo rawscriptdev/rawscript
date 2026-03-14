@@ -1,6 +1,6 @@
 {
   "name": "rawscript",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "TypeScript in the browser. Zero install. Zero config. Zero dependencies.",
   "type": "module",
   "main": "dist/rawscript.js",
