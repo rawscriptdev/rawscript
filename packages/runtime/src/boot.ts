@@ -2,6 +2,8 @@ import { showLoadingIndicator, hideLoadingIndicator } from './loader.js'
 import { initBroadcastChannel } from './hmr.js'
 import { DebugPanel } from './debugpanel.js'
 import { runFallback } from './fallback.js'
+import { showErrorOverlay } from './errors.js'
+import type { CompileDiagnostic } from './diagnostics.js'
 
 // TODO v0.9.0: make this configurable via data-sw-path attribute
 const SW_PATH = '/rawscript-sw.js'
@@ -56,3 +58,19 @@ if ('serviceWorker' in navigator) {
 } else {
   runFallback()
 }
+
+navigator.serviceWorker.addEventListener('message', (event: MessageEvent) => {
+  const data = event.data
+  if (!data || typeof data !== 'object') return
+
+  if (data.type === 'TRANSPILE_ERROR') {
+    const diagnostic = data as unknown as CompileDiagnostic
+    showErrorOverlay(
+      new Error(diagnostic.message ?? 'Unknown transpile error'),
+      diagnostic.file ?? '',
+      diagnostic.line ?? 0,
+      diagnostic.column ?? 0,
+      diagnostic
+    )
+  }
+})

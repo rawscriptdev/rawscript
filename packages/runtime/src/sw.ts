@@ -3,6 +3,7 @@ declare const self: ServiceWorkerGlobalScope
 import { transpile, type JsxConfig } from './transpiler.js'
 import { rewriteImports } from './resolver.js'
 import { fetchTsConfig, getJsxOptionsFromTsconfig, unsupportedOptionWarnings, type TsConfig } from './tsconfig.js'
+import { buildCompileDiagnostic, type CompileDiagnostic } from './diagnostics.js'
 
 let knownImportmap: Record<string, string> = {}
 let configState: { tsconfig: TsConfig | null; at: number } | null = null
@@ -81,14 +82,38 @@ async function handleFetch(event: FetchEvent): Promise<Response> {
     }
     const source = await response.text()
     const { jsxConfig } = await getTsconfigState(url.pathname)
-    const js = await transpile(source, url.pathname, jsxConfig)
-    const rewritten = rewriteImports(js, knownImportmap)
-    return new Response(rewritten, {
-      headers: { 'Content-Type': 'application/javascript; charset=utf-8' },
-    })
+    try {
+      const js = await transpile(source, url.pathname, jsxConfig)
+      const rewritten = rewriteImports(js, knownImportmap)
+      return new Response(rewritten, {
+        headers: { 'Content-Type': 'application/javascript; charset=utf-8' },
+      })
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      const diagnostic = buildCompileDiagnostic({
+        file: url.pathname,
+        message,
+        source,
+      })
+      notifyClient({ type: 'TRANSPILE_ERROR', ...diagnostic })
+      return transpileErrorResponse(diagnostic)
+    }
   }
 
   return fetch(event.request)
+}
+
+/**
+ * A transpile failure must never become an opaque network error. Return a
+ * module that throws with a structured diagnostic, and notify pages so the
+ * error overlay can render WHAT/WHERE/WHY/HOW.
+ */
+function transpileErrorResponse(diagnostic: CompileDiagnostic): Response {
+  const safe = diagnostic.message.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n')
+  const js = `throw new Error("rawscript: ${diagnostic.category} in ${diagnostic.file}: ${safe}")`
+  return new Response(js, {
+    headers: { 'Content-Type': 'application/javascript; charset=utf-8' },
+  })
 }
 
 self.addEventListener('fetch', (event: FetchEvent) => {
