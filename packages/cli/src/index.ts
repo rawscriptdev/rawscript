@@ -7,6 +7,7 @@
 
 import { program } from 'commander'
 import { build } from './bundler.js'
+import { serve } from './serve.js'
 
 program
   .name('rawscript')
@@ -21,6 +22,14 @@ program
   .option('--no-minify', 'Disable minification')
   .action(async (options) => {
     await build(options.entry, options.out, options.minify)
+  })
+
+program
+  .command('serve')
+  .description('Static file server for the current directory, no config')
+  .option('--port <number>', 'Port to serve on', '3000')
+  .action(async (options) => {
+    await serve(parseInt(options.port, 10))
   })
 
 program.parse()
