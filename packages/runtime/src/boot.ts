@@ -4,6 +4,7 @@ import { DebugPanel } from './debugpanel.js'
 import { runFallback } from './fallback.js'
 import { showErrorOverlay } from './errors.js'
 import type { CompileDiagnostic } from './diagnostics.js'
+import { startWatcher } from './watcher.js'
 
 // TODO v0.9.0: make this configurable via data-sw-path attribute
 const SW_PATH = '/rawscript-sw.js'
@@ -49,6 +50,7 @@ if ('serviceWorker' in navigator) {
       hideLoadingIndicator()
       hmrChannel = initBroadcastChannel()
       debugPanel = new DebugPanel()
+      startWatcher()
     })
     .catch((err) => {
       console.warn('rawscript: Service Worker registration failed, using Blob URL fallback.', err)
