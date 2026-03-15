@@ -129,13 +129,28 @@ async function handleFetch(event: FetchEvent): Promise<Response> {
 
   // Always fetch the current source (no HTTP cache) so the fingerprint is
   // content-aware: source edits are picked up without a manual cache bust.
-  const fetched = await fetch(event.request, { cache: 'no-store' })
+  let source: string
+  let fetched: Response
+  try {
+    fetched = await fetch(event.request, { cache: 'no-store' })
+  } catch (err) {
+    // Network failure: serve a stale cached entry when one exists rather
+    // than trapping the page offline. A warning is logged so the situation
+    // is visible.
+    const cache = await caches.open(TRANSPILED_CACHE)
+    const stale = await cache.match(event.request)
+    if (stale) {
+      console.warn(`rawscript: network error fetching ${url.pathname}, serving stale cache`, err)
+      return stale
+    }
+    return new Response(`rawscript: network error fetching ${url.pathname}`, { status: 502 })
+  }
   if (!fetched.ok) {
     // Pass non-OK responses (404, 500, etc.) through as-is rather than
     // attempting to transpile an error body.
     return fetched
   }
-  const source = await fetched.text()
+  source = await fetched.text()
 
   const { tsconfig, jsxConfig } = await getTsconfigState(url.pathname)
   const fingerprint = fnv1a(
