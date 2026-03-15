@@ -14,16 +14,37 @@
 import * as esbuild from 'esbuild'
 import * as fs from 'fs'
 import * as path from 'path'
+import { readTsconfigInfo } from './tsconfig.js'
+import { runTypecheck } from './typecheck.js'
 
 export async function build(
   entryPoint: string,
   outDir: string,
-  minify = true
+  minify = true,
+  typecheck = false
 ): Promise<void> {
   const entryAbs = path.resolve(entryPoint)
 
   if (!fs.existsSync(entryAbs)) {
     throw new Error(`Entry HTML not found: ${entryPoint}`)
+  }
+
+  if (typecheck) {
+    const entryDir = path.dirname(entryAbs)
+    const result = runTypecheck(entryDir)
+    if (result.errorCount > 0) {
+      console.error(
+        `✗ Type check failed: ${result.errorCount} error${result.errorCount === 1 ? '' : 's'} in ` +
+          `${result.checkedFileCount} file${result.checkedFileCount === 1 ? '' : 's'}. ` +
+          `Build aborted — fix the errors above or run \`rawscript typecheck\`. ` +
+          '(rawscript build only transpiles and bundles; it never type-checks.)'
+      )
+      process.exitCode = 1
+      return
+    }
+    console.log(
+      `✓ Type check passed (${result.checkedFileCount} file${result.checkedFileCount === 1 ? '' : 's'} clean).`
+    )
   }
 
   const htmlContent = fs.readFileSync(entryAbs, 'utf-8')
@@ -38,7 +59,14 @@ export async function build(
   const outAbs = path.resolve(outDir)
   fs.mkdirSync(outAbs, { recursive: true })
 
-  const jsxConfig = getJsxConfig(htmlContent)
+  // tsconfig.jsx* settings take precedence over importmap inference so that
+  // dev (browser runtime) and production (CLI bundle) use the same JSX
+  // configuration. baseUrl/paths are resolved natively by esbuild.
+  const tsconfigInfo = readTsconfigInfo(entryDir)
+  for (const warning of tsconfigInfo.warnings) {
+    console.warn(`rawscript [config]: ${warning}`)
+  }
+  const jsxConfig = tsconfigInfo.options ?? getJsxConfig(htmlContent)
   const externalSpecifiers = new Set<string>()
 
   for (const tsPath of tsScriptPaths) {
