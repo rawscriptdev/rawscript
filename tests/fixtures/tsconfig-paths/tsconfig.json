@@ -1,0 +1,10 @@
+{
+  // tsconfig paths fixture — comments are tolerated, like tsc allows
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@lib/*": ["./src/*"],
+      "exact": ["./src/exact"]
+    }
+  }
+}
