@@ -1,9 +1,15 @@
 declare const self: ServiceWorkerGlobalScope
 
-import { transpile, type JsxConfig } from './transpiler.js'
+import { transpile, WASM_URL, WASM_CACHE, ESBUILD_VERSION, type JsxConfig } from './transpiler.js'
 import { rewriteImports, mapBareImports, collectImportSpecifiers } from './resolver.js'
+import { fnv1a } from './hash.js'
 import { fetchTsConfig, getJsxOptionsFromTsconfig, applyPaths, unsupportedOptionWarnings, type TsConfig } from './tsconfig.js'
 import { buildCompileDiagnostic, type CompileDiagnostic } from './diagnostics.js'
+
+const TRANSPILED_CACHE = 'rawscript-transpiled-v2'
+const FINGERPRINT_HEADER = 'x-rawscript-fingerprint'
+const TARGET = 'esnext'
+const FORMAT = 'esm'
 
 let knownImportmap: Record<string, string> = {}
 let configState: { tsconfig: TsConfig | null; at: number } | null = null
@@ -12,11 +18,61 @@ const CONFIG_TTL_MS = 5000
 /** Module graph: imported module path -> importer path (for error chains). */
 const moduleGraph = new Map<string, string>()
 
-self.addEventListener('message', (event: MessageEvent) => {
-  if (event.data?.type === 'IMPORTMAP') {
-    knownImportmap = event.data.importmap ?? {}
+self.addEventListener('install', (event) => {
+  // Never fail installation because the WASM pre-cache is unreachable — it
+  // will simply be fetched on demand (transpiler.initializeFromCache).
+  event.waitUntil(
+    caches
+      .open(WASM_CACHE)
+      .then((cache) => cache.add(WASM_URL))
+      .catch((err) =>
+        console.warn('rawscript: WASM pre-cache failed; it will be fetched on demand', err)
+      )
+  )
+  self.skipWaiting()
+})
+
+self.addEventListener('activate', (event) => {
+  event.waitUntil(activate())
+})
+
+async function activate(): Promise<void> {
+  await self.clients.claim()
+
+  const names = (await caches.keys()).filter((name) => name.startsWith('rawscript-'))
+
+  // Drop everything that is not part of the current namespace. Never touch
+  // the WASM cache that the install handler just pre-cached.
+  await Promise.all(
+    names
+      .filter((name) => name !== WASM_CACHE && name !== TRANSPILED_CACHE)
+      .map((name) => caches.delete(name))
+  )
+}
+
+self.addEventListener('message', (event: ExtendableMessageEvent) => {
+  const data = event.data
+  if (!data || typeof data !== 'object') return
+  if (data.type === 'IMPORTMAP') {
+    knownImportmap = data.importmap ?? {}
+  } else if (data.type === 'CACHE_BUST') {
+    event.waitUntil(
+      bustCache(data.url).then(() => {
+        event.ports?.[0]?.postMessage({ type: 'CACHE_BUSTED' })
+      })
+    )
   }
 })
+
+async function bustCache(url?: string): Promise<void> {
+  const cache = await caches.open(TRANSPILED_CACHE)
+  if (url) {
+    await cache.delete(url)
+  } else {
+    const keys = await cache.keys()
+    await Promise.all(keys.map((key) => cache.delete(key)))
+  }
+}
 
 /**
  * Derive the JSX transform from the page's importmap:
@@ -35,8 +91,9 @@ function getJsxConfig(): JsxConfig {
 }
 
 /**
- * Read tsconfig.json (TTL-cached so dev edits are picked up after a reload).
- * Explicit tsconfig JSX settings take precedence over importmap inference.
+ * Read tsconfig.json (TTL-cached so dev edits are picked up after a reload),
+ * reporting warnings/errors to pages. Explicit tsconfig JSX settings take
+ * precedence over importmap inference.
  */
 async function getTsconfigState(pathname: string): Promise<{ tsconfig: TsConfig | null; jsxConfig: JsxConfig }> {
   const now = Date.now()
@@ -61,63 +118,92 @@ async function getTsconfigState(pathname: string): Promise<{ tsconfig: TsConfig 
   return { tsconfig, jsxConfig }
 }
 
-function notifyClient(data: Record<string, unknown>): void {
-  self.clients.matchAll({ type: 'window' }).then((clients) => {
-    for (const client of clients) {
-      client.postMessage(data)
-    }
-  })
-}
-
 async function handleFetch(event: FetchEvent): Promise<Response> {
   const url = new URL(event.request.url)
 
-  if (
+  const isTs =
     event.request.method === 'GET' &&
     (url.pathname.endsWith('.ts') || url.pathname.endsWith('.tsx'))
-  ) {
-    const response = await fetch(event.request)
-    if (!response.ok) {
-      // Pass non-OK responses (404, 500, etc.) through as-is rather than
-      // attempting to transpile an error body, which would throw and turn
-      // the request into an opaque network error.
-      return response
-    }
-    const source = await response.text()
-    const { tsconfig, jsxConfig } = await getTsconfigState(url.pathname)
-    try {
-      let toTranspile = source
-      if (tsconfig) {
-        const mapped = mapBareImports(source, (specifier) => {
-          if (specifier in knownImportmap) return null
-          return applyPaths(specifier, tsconfig, url.pathname)
-        })
-        if (mapped !== source) toTranspile = mapped
-      }
 
-      // Record the module graph from the raw source BEFORE transpiling so a
-      // failing module's importers are already known when its error is raised.
-      recordModuleGraph(url.pathname, source)
+  if (!isTs) return fetch(event.request)
 
-      const js = await transpile(toTranspile, url.pathname, jsxConfig)
-      const rewritten = rewriteImports(js, knownImportmap)
-      return new Response(rewritten, {
-        headers: { 'Content-Type': 'application/javascript; charset=utf-8' },
-      })
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
-      const diagnostic = buildCompileDiagnostic({
-        file: url.pathname,
-        message,
-        source,
-        chain: getImportChain(url.pathname),
-      })
-      notifyClient({ type: 'TRANSPILE_ERROR', ...diagnostic })
-      return transpileErrorResponse(diagnostic)
+  // Always fetch the current source (no HTTP cache) so the fingerprint is
+  // content-aware: source edits are picked up without a manual cache bust.
+  const fetched = await fetch(event.request, { cache: 'no-store' })
+  if (!fetched.ok) {
+    // Pass non-OK responses (404, 500, etc.) through as-is rather than
+    // attempting to transpile an error body.
+    return fetched
+  }
+  const source = await fetched.text()
+
+  const { tsconfig, jsxConfig } = await getTsconfigState(url.pathname)
+  const fingerprint = fnv1a(
+    JSON.stringify({
+      source,
+      jsxConfig,
+      importmap: knownImportmap,
+      tsconfig: tsconfig?.raw ?? null,
+      esbuild: ESBUILD_VERSION,
+      target: TARGET,
+      format: FORMAT,
+    })
+  )
+
+  const cache = await caches.open(TRANSPILED_CACHE)
+
+  const cached = await cache.match(event.request)
+  if (cached) {
+    if (cached.headers.get(FINGERPRINT_HEADER) === fingerprint) {
+      return cached
+    } else {
+      // Source or configuration changed — the compiled output is stale.
+      await cache.delete(event.request)
     }
   }
 
-  return fetch(event.request)
+  try {
+    let toTranspile = source
+    if (tsconfig) {
+      const mapped = mapBareImports(source, (specifier) => {
+        if (specifier in knownImportmap) return null
+        return applyPaths(specifier, tsconfig, url.pathname)
+      })
+      if (mapped !== source) toTranspile = mapped
+    }
+
+    // Record the module graph from the raw source BEFORE transpiling so a
+    // failing module's importers are already known when its error is raised.
+    recordModuleGraph(url.pathname, source)
+
+    const js = await transpile(toTranspile, url.pathname, jsxConfig)
+    const rewritten = rewriteImports(js, knownImportmap)
+
+    const out = new Response(rewritten, {
+      headers: {
+        'Content-Type': 'application/javascript; charset=utf-8',
+        [FINGERPRINT_HEADER]: fingerprint,
+      },
+    })
+    try {
+      await cache.put(event.request, out.clone())
+    } catch (err) {
+      // Quota or write failure must never break serving — the entry is
+      // simply not cached this time.
+      console.warn(`rawscript: failed to cache ${url.pathname}, serving without caching`, err)
+    }
+    return out
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    const diagnostic = buildCompileDiagnostic({
+      file: url.pathname,
+      message,
+      source,
+      chain: getImportChain(url.pathname),
+    })
+    notifyClient({ type: 'TRANSPILE_ERROR', ...diagnostic })
+    return transpileErrorResponse(diagnostic)
+  }
 }
 
 /** Record module -> imports so diagnostics can show the dependency chain. */
@@ -147,10 +233,18 @@ function getImportChain(file: string): string[] {
   return chain
 }
 
+function notifyClient(data: Record<string, unknown>): void {
+  self.clients.matchAll({ type: 'window' }).then((clients) => {
+    for (const client of clients) {
+      client.postMessage(data)
+    }
+  })
+}
+
 /**
  * A transpile failure must never become an opaque network error. Return a
  * module that throws with a structured diagnostic, and notify pages so the
- * error overlay can render WHAT/WHERE/WHY/HOW.
+ * error overlay can render WHAT/WHERE/WHY/HOW + the dependency chain.
  */
 function transpileErrorResponse(diagnostic: CompileDiagnostic): Response {
   const safe = diagnostic.message.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n')
