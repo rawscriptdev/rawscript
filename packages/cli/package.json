@@ -1,0 +1,42 @@
+{
+  "name": "rawscript-cli",
+  "version": "0.2.0",
+  "description": "CLI for rawscript: bundle in-browser TypeScript apps and serve them",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "rawscript": "dist/cli.mjs"
+  },
+  "main": "dist/cli.mjs",
+  "files": [
+    "dist/"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "typescript",
+    "esm",
+    "esbuild",
+    "bundler",
+    "cli",
+    "rawscript"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rawscript-dev/rawscript.git"
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "serve": "node src/serve.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "esbuild": "^0.20.2",
+    "commander": "^11.0.0",
+    "typescript": "^5.4.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0"
+  }
+}
