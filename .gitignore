@@ -3,3 +3,9 @@ package-lock.json
 *.tsbuildinfo
 .DS_Store
 Thumbs.db
+test-results/
+playwright-report/
+blob-report/
+benchmarks/results/
+out/
+dist/

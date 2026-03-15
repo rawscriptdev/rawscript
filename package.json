@@ -2,10 +2,19 @@
   "name": "rawscript-monorepo",
   "private": true,
   "version": "0.2.0",
+  "type": "module",
   "packageManager": "pnpm@9.0.0",
   "scripts": {
     "dev": "pnpm --filter rawscript build --watch",
     "build": "pnpm --filter rawscript build",
+    "serve": "node scripts/serve.mjs",
+    "test": "pnpm test:unit && pnpm test:e2e",
+    "test:unit": "node --test \"tests/unit/*.test.ts\"",
+    "test:e2e": "playwright test --project=chromium --project=firefox && playwright test --project=webkit --workers=1",
+    "bench": "node benchmarks/run.mjs",
     "typecheck": "pnpm -r typecheck"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.49.0"
   }
 }
