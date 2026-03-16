@@ -3,10 +3,13 @@ declare const self: ServiceWorkerGlobalScope
 import { transpile, WASM_URL, WASM_CACHE, ESBUILD_VERSION, type JsxConfig } from './transpiler.js'
 import { rewriteImports, mapBareImports, collectImportSpecifiers } from './resolver.js'
 import { fnv1a } from './hash.js'
+import { RAWSCRIPT_VERSION, SW_PROTOCOL_VERSION } from './version.js'
 import { fetchTsConfig, getJsxOptionsFromTsconfig, applyPaths, unsupportedOptionWarnings, type TsConfig } from './tsconfig.js'
 import { buildCompileDiagnostic, type CompileDiagnostic } from './diagnostics.js'
 
 const TRANSPILED_CACHE = 'rawscript-transpiled-v2'
+const META_CACHE = 'rawscript-meta-v1'
+const META_KEY = 'rawscript://meta'
 const FINGERPRINT_HEADER = 'x-rawscript-fingerprint'
 const BODY_HASH_HEADER = 'x-rawscript-body-hash'
 const TARGET = 'esnext'
@@ -40,21 +43,71 @@ self.addEventListener('activate', (event) => {
 async function activate(): Promise<void> {
   await self.clients.claim()
 
+  const oldMeta = await readMeta()
   const names = (await caches.keys()).filter((name) => name.startsWith('rawscript-'))
 
-  // Drop everything that is not part of the current namespace. Never touch
-  // the WASM cache that the install handler just pre-cached.
-  await Promise.all(
-    names
-      .filter((name) => name !== WASM_CACHE && name !== TRANSPILED_CACHE)
-      .map((name) => caches.delete(name))
-  )
+  if (oldMeta && oldMeta.protocolVersion !== SW_PROTOCOL_VERSION) {
+    // Incompatible previous version — full reset. The protocol cannot
+    // guarantee that old entries are compatible.
+    console.warn('rawscript: protocol version changed, resetting all caches')
+    await Promise.all(names.map((name) => caches.delete(name)))
+  } else {
+    // Fresh install (no meta yet) or compatible protocol: drop everything
+    // that is not the current namespace (cache migration handles schema
+    // changes via the vN suffix). Never touch the WASM cache that the
+    // install handler just pre-cached.
+    await Promise.all(
+      names
+        .filter((name) => name !== WASM_CACHE && name !== TRANSPILED_CACHE && name !== META_CACHE)
+        .map((name) => caches.delete(name))
+    )
+  }
+
+  try {
+    const cache = await caches.open(META_CACHE)
+    await cache.put(
+      META_KEY,
+      new Response(JSON.stringify({ protocolVersion: SW_PROTOCOL_VERSION, rawscriptVersion: RAWSCRIPT_VERSION }), {
+        headers: { 'Content-Type': 'application/json' },
+      })
+    )
+  } catch (err) {
+    console.warn('rawscript: failed to write version metadata', err)
+  }
+
+  const clients = await self.clients.matchAll({ type: 'window' })
+  for (const client of clients) {
+    client.postMessage({
+      type: 'SW_ACTIVATED',
+      protocolVersion: SW_PROTOCOL_VERSION,
+      rawscriptVersion: RAWSCRIPT_VERSION,
+    })
+  }
+}
+
+async function readMeta(): Promise<{ protocolVersion?: number; rawscriptVersion?: string } | null> {
+  try {
+    const cache = await caches.open(META_CACHE)
+    const hit = await cache.match(META_KEY)
+    if (!hit) return null
+    return (await hit.json()) as { protocolVersion?: number; rawscriptVersion?: string }
+  } catch {
+    return null
+  }
 }
 
 self.addEventListener('message', (event: ExtendableMessageEvent) => {
   const data = event.data
   if (!data || typeof data !== 'object') return
-  if (data.type === 'IMPORTMAP') {
+  if (data.type === 'HANDSHAKE') {
+    knownImportmap = data.importmap ?? {}
+    event.ports?.[0]?.postMessage({
+      type: 'SW_READY',
+      protocolVersion: SW_PROTOCOL_VERSION,
+      rawscriptVersion: RAWSCRIPT_VERSION,
+    })
+  } else if (data.type === 'IMPORTMAP') {
+    // Backwards-compatible with older pages that only send the importmap.
     knownImportmap = data.importmap ?? {}
   } else if (data.type === 'CACHE_BUST') {
     event.waitUntil(
