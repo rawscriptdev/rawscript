@@ -8,6 +8,7 @@ import { buildCompileDiagnostic, type CompileDiagnostic } from './diagnostics.js
 
 const TRANSPILED_CACHE = 'rawscript-transpiled-v2'
 const FINGERPRINT_HEADER = 'x-rawscript-fingerprint'
+const BODY_HASH_HEADER = 'x-rawscript-body-hash'
 const TARGET = 'esnext'
 const FORMAT = 'esm'
 
@@ -170,7 +171,11 @@ async function handleFetch(event: FetchEvent): Promise<Response> {
   const cached = await cache.match(event.request)
   if (cached) {
     if (cached.headers.get(FINGERPRINT_HEADER) === fingerprint) {
-      return cached
+      const valid = await isBodyIntact(cached)
+      if (valid) return cached
+      // Corrupt body with a matching fingerprint: invalidate + recompile.
+      console.warn(`rawscript: cache entry for ${url.pathname} failed integrity check, recompiling`)
+      await cache.delete(event.request)
     } else {
       // Source or configuration changed — the compiled output is stale.
       await cache.delete(event.request)
@@ -198,6 +203,7 @@ async function handleFetch(event: FetchEvent): Promise<Response> {
       headers: {
         'Content-Type': 'application/javascript; charset=utf-8',
         [FINGERPRINT_HEADER]: fingerprint,
+        [BODY_HASH_HEADER]: fnv1a(rewritten),
       },
     })
     try {
@@ -218,6 +224,18 @@ async function handleFetch(event: FetchEvent): Promise<Response> {
     })
     notifyClient({ type: 'TRANSPILE_ERROR', ...diagnostic })
     return transpileErrorResponse(diagnostic)
+  }
+}
+
+/** Verify a cached response's body against its stored content hash. */
+async function isBodyIntact(cached: Response): Promise<boolean> {
+  try {
+    const expected = cached.headers.get(BODY_HASH_HEADER)
+    if (!expected) return false
+    const body = await cached.clone().text()
+    return fnv1a(body) === expected
+  } catch {
+    return false
   }
 }
 
