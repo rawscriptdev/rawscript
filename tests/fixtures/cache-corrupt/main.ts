@@ -1,2 +1,1 @@
-const msg = "corrupt me"
-document.body.textContent = msg
+document.getElementById('app')!.textContent = 'corrupt-fixture-ok'

@@ -1,2 +1,1 @@
-const msg = "hello cache"
-document.body.textContent = msg
+document.getElementById('app')!.textContent = 'cache-v1'
