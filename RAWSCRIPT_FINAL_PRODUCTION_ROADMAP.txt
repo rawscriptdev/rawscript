@@ -1,0 +1,1208 @@
+RAWSCRIPT — FINAL PRODUCTION EVOLUTION ROADMAP
+================================================
+
+MASTER PROMPT FOR THE AI ENGINEER
+
+You are the lead engineer responsible for evolving the existing Rawscript codebase into a genuinely useful, production-mature open-source developer tool.
+
+This is the FINAL agreed roadmap after reviewing:
+1. the existing Rawscript architecture and limitations,
+2. the previous comprehensive production roadmap,
+3. the subsequent engineering critique of that roadmap.
+
+Do not restart the project from scratch.
+Do not blindly implement the old 40+ phase roadmap.
+Do not turn Rawscript into Vite, npm, webpack, Rollup, or another generic build system.
+
+Read the existing code and tests first, preserve working behavior, then implement this roadmap incrementally.
+
+THE ULTIMATE SUCCESS CRITERION IS NOT:
+- number of features,
+- number of phases,
+- resume value,
+- benchmark screenshots,
+- or architectural complexity.
+
+The ultimate success criterion is:
+
+A real developer who does not know the author should be able to discover Rawscript, understand its value, use it for an actual project, trust it, and voluntarily choose it because it solves a real problem better or more conveniently than the alternatives.
+
+REAL USER ADOPTION IS THE NON-NEGOTIABLE GOAL.
+
+
+================================================
+1. RAWSCRIPT'S IDENTITY — NEVER COMPROMISE THIS
+================================================
+
+Rawscript's core identity is:
+
+"Zero-config, browser-native TypeScript/TSX execution."
+
+The runtime should continue to allow a simple experience such as:
+
+<script src="rawscript.js"></script>
+<script type="module" src="./main.ts"></script>
+
+The core flow remains:
+
+Browser
+  ↓
+Rawscript runtime
+  ↓
+Service Worker
+  ↓
+esbuild-WASM
+  ↓
+TypeScript/TSX → JavaScript
+  ↓
+Browser
+
+Rawscript should remain useful for:
+- prototypes
+- teaching
+- documentation
+- demos
+- small tools
+- browser-native experiments
+- simple applications
+- situations where installing a complete Node/bundler toolchain is unnecessary
+
+The runtime must NOT become dependent on a mandatory Node process, npm install, CLI dev server, or WebSocket server.
+
+Core philosophy:
+
+"Zero config for beginners, full control for professionals."
+
+Do not sacrifice the zero-config runtime merely to imitate mature build tools.
+
+
+================================================
+2. WHAT RAWSCRIPT MUST NOT BECOME
+================================================
+
+DO NOT turn Rawscript into:
+- Vite
+- webpack
+- Rollup
+- another full bundler
+- npm
+- pnpm
+- another package manager
+- another TypeScript compiler
+- a generic development-server framework
+- a mandatory WebSocket/HMR system
+- a giant plugin ecosystem
+
+The CLI should be a thin orchestration layer around mature infrastructure, especially:
+- esbuild
+- npm
+- pnpm
+- TypeScript
+- browser import maps
+- standard web APIs
+
+Reimplement existing ecosystems only when there is a specific Rawscript-specific reason.
+
+
+================================================
+3. TWO-PRODUCT ARCHITECTURE
+================================================
+
+A. BROWSER RUNTIME
+------------------
+Purpose:
+Zero-install / zero-config browser-native TypeScript/TSX execution.
+
+Primary innovation areas:
+- Service Worker
+- esbuild-WASM
+- browser module behavior
+- import maps
+- cache correctness
+- offline/self-hosted capability
+- diagnostics
+- security
+- browser compatibility
+- simple developer experience
+
+B. CLI
+------
+Purpose:
+A practical production/build companion.
+
+The CLI may use:
+- native esbuild
+- npm/pnpm
+- TypeScript
+- standard lockfiles
+- local node_modules/package stores
+
+The CLI must NOT become a new package manager or replacement for Vite.
+
+
+================================================
+4. DEPENDENCY MANAGEMENT — DO NOT REIMPLEMENT NPM
+================================================
+
+This is non-negotiable.
+
+Do NOT create:
+- a Rawscript package manager
+- a Rawscript registry
+- custom semver
+- custom peer dependency resolution
+- a proprietary dependency lockfile
+- a custom npm-compatible package store
+- custom registry semantics
+
+Use the ecosystem developers already know.
+
+Preferred architecture:
+
+npm / pnpm
+    ↓
+existing package installation
+    ↓
+node_modules / package store
+    ↓
+Rawscript CLI
+    ↓
+browser-compatible dependency resolution
+    ↓
+browser
+
+Existing lockfiles remain authoritative:
+- package-lock.json
+- pnpm-lock.yaml
+- other standard ecosystem lockfiles where practical
+
+Rawscript should integrate with the existing package ecosystem rather than forcing developers to learn another package-management system.
+
+
+================================================
+5. BROWSER DEPENDENCY RESOLUTION
+================================================
+
+The Rawscript-specific problem is:
+
+import React from "react";
+
+Browsers do not natively resolve arbitrary bare npm specifiers.
+
+Solve this using standard browser mechanisms wherever possible.
+
+Preferred direction:
+
+npm/pnpm-installed dependencies
+        ↓
+Rawscript CLI
+        ↓
+generated/import-map based resolution
+        ↓
+browser
+        ↓
+Service Worker handles Rawscript-specific transformation
+
+Use import maps as the primary standard mechanism.
+
+The existing regex resolver may remain for zero-config/CDN compatibility and fallback behavior, but do not continuously grow a complicated regex-based module parser.
+
+Do NOT replace it with a custom AST/package-resolution system unless real evidence shows the existing approach cannot satisfy the product requirements.
+
+Prefer generated import maps over custom rewriting whenever possible.
+
+
+================================================
+6. CDN DEPENDENCY — FIX THE REAL WEAKNESS
+================================================
+
+The current CDN architecture is useful and should not be removed.
+
+Maintain a convenient zero-config mode.
+
+However, mandatory reliance on:
+- esm.sh
+- unpkg
+- other third-party CDNs
+
+must no longer be the only serious production path.
+
+Support two modes.
+
+MODE A — ZERO-CONFIG
+--------------------
+HTML
+  ↓
+Rawscript
+  ↓
+CDN-backed dependencies
+
+Good for:
+- demos
+- education
+- docs
+- prototypes
+- simple tools
+
+MODE B — SELF-HOSTED / LOCAL
+----------------------------
+project
+  ├── Rawscript runtime
+  ├── compiler/WASM
+  ├── dependencies
+  └── application
+
+Critical runtime assets and dependencies should be capable of being served from infrastructure controlled by the developer.
+
+This should enable practical:
+- restricted-network development
+- internal applications
+- private projects
+- controlled deployments
+- offline-capable workflows after dependencies/assets have been prepared
+
+Define and document exactly what "offline" means. Do not make fake absolute claims.
+
+
+================================================
+7. LOCAL PRODUCTION DEPENDENCY BUNDLING
+================================================
+
+The CLI should provide a production mode where npm dependencies are bundled locally.
+
+Use native esbuild.
+
+Do NOT write a new bundler.
+
+Target:
+
+source
+  ↓
+Rawscript CLI
+  ↓
+esbuild
+  ↓
+local dependency bundle
+  ↓
+optimized static output
+
+Support where appropriate:
+- dependency bundling
+- tree shaking through esbuild
+- code splitting
+- dynamic imports
+- minification
+- source maps
+- deterministic/reproducible output where practical
+
+The goal is production output that does not depend on third-party runtime CDNs.
+
+Do not recreate esbuild internally.
+
+
+================================================
+8. JSX CONFIGURATION — RELEASE-BLOCKING CORRECTNESS
+================================================
+
+Rawscript supports different JSX environments.
+
+At minimum ensure correct behavior for:
+- React
+- Preact
+- Solid
+- other supported JSX runtimes already supported by the project
+
+DO NOT assume React merely because an import map is absent.
+
+Bundled CLI mode may not have the same import map as browser development mode.
+
+JSX configuration must be derived from explicit project configuration and/or project metadata.
+
+Relevant sources may include:
+- rawscript.config.*
+- tsconfig.json
+- package.json
+- explicit CLI flags
+
+Dev and production must use the SAME effective JSX configuration.
+
+A project compiling as the wrong JSX runtime is a release-blocking correctness bug.
+
+Create tests for:
+- React
+- Preact
+- Solid
+- configuration changes
+- dev vs production equivalence
+
+
+================================================
+9. TSCONFIG SUPPORT
+================================================
+
+Add practical tsconfig.json support.
+
+Support relevant settings that affect Rawscript transformation/resolution, including where applicable:
+- jsx
+- jsxImportSource
+- baseUrl
+- paths
+- module-related behavior
+- verbatimModuleSyntax
+- other configuration that materially affects module handling
+
+Do NOT attempt to reimplement TypeScript.
+
+Only support settings Rawscript actually needs.
+
+If an option is unsupported, produce a clear diagnostic instead of silently doing the wrong thing.
+
+
+================================================
+10. TYPE CHECKING
+================================================
+
+Do not confuse TypeScript transpilation with TypeScript type checking.
+
+Provide:
+
+rawscript typecheck
+
+and optionally:
+
+rawscript build --typecheck
+
+Use the real TypeScript compiler for checking.
+
+Clearly document:
+rawscript build = transformation/bundling
+rawscript typecheck = actual type checking
+
+Do not claim type safety when only transpilation occurred.
+
+
+================================================
+11. MINIMAL CONFIGURATION
+================================================
+
+Introduce a minimal Rawscript configuration file only where configuration is genuinely necessary.
+
+Example:
+rawscript.config.ts
+
+Possible responsibilities:
+- JSX runtime
+- build behavior
+- dependency behavior
+- self-hosting configuration
+- output configuration
+- security/server configuration
+- future options with demonstrated need
+
+Do NOT create a giant configuration system.
+
+Zero-config must remain the default.
+
+
+================================================
+12. CACHE CORRECTNESS
+================================================
+
+Cache correctness is a top runtime priority.
+
+Do not key compiled output only by URL/version.
+
+Compiled output can depend on:
+
+source identity
++
+source version/content
++
+JSX configuration
++
+esbuild version
++
+Rawscript version
++
+relevant transform configuration
+
+Therefore use content/configuration-aware cache keys.
+
+Conceptually:
+
+cacheKey =
+hash(
+  source identity,
+  source content/version,
+  JSX configuration,
+  compiler version,
+  Rawscript version,
+  relevant transform options
+)
+
+Changing configuration must not accidentally reuse incompatible compiled output.
+
+
+================================================
+13. CACHE MANAGEMENT — KEEP IT PRACTICAL
+================================================
+
+Implement:
+- versioned cache namespaces
+- content-aware keys
+- stale cleanup
+- reasonable cache size limits
+- corrupt-cache recovery
+- manual cache clearing/debugging
+
+Do NOT immediately implement a complex LRU database.
+
+Cache Storage has no native LRU abstraction.
+
+Only introduce sophisticated eviction machinery if real usage proves it necessary.
+
+
+================================================
+14. CORRUPT-CACHE RECOVERY
+================================================
+
+Recover gracefully from:
+- corrupted WASM cache
+- corrupted transpiled output
+- failed cache writes
+- incomplete cache entries
+- compiler version changes
+- Service Worker update inconsistencies
+
+Expected behavior:
+
+detect failure
+  ↓
+invalidate bad entry
+  ↓
+refetch/recompile
+  ↓
+recover
+
+The user should not be permanently trapped by a bad cache.
+
+
+================================================
+15. SERVICE WORKER UPDATE PROTOCOL
+================================================
+
+The Service Worker lifecycle must become robust.
+
+Implement a versioned update protocol for:
+
+page ↔ Service Worker
+
+Handle:
+- update detection
+- activation
+- old/new worker coordination
+- cache migration
+- reload decisions
+- duplicate reload prevention
+- incompatible protocol versions
+- re-sending import-map configuration after update
+
+Do not use blind:
+updatefound → reload
+
+logic.
+
+Treat Service Worker updates as a protocol.
+
+
+================================================
+16. HMR — DO NOT MAKE IT A CORE REQUIREMENT
+================================================
+
+Keep Rawscript's zero-config philosophy.
+
+Default runtime may continue to use:
+
+poll
+  ↓
+detect change
+  ↓
+invalidate
+  ↓
+reload
+
+Improve:
+- correctness
+- cache invalidation
+- dependency awareness where practical
+- diagnostics
+- polling efficiency
+- reload behavior
+
+DO NOT make WebSocket-based state-preserving HMR a v1.0 requirement.
+
+Do not make the browser runtime depend on a Rawscript dev server.
+
+An optional future CLI development server with enhanced HMR is acceptable only if it does not replace the zero-config runtime path.
+
+
+================================================
+17. DIAGNOSTICS — MAJOR DX PRIORITY
+================================================
+
+Make diagnostics one of Rawscript's strongest features.
+
+Every important error should answer:
+
+WHAT failed?
+WHERE?
+WHY?
+HOW DO I FIX IT?
+
+Diagnostics should include where possible:
+- file
+- line
+- column
+- error category
+- source context
+- import/dependency chain
+- actionable fix
+
+Example:
+
+Rawscript compilation error
+
+File:
+src/components/Button.tsx
+
+Line:
+24
+
+Reason:
+Unsupported JSX configuration
+
+Detected:
+React automatic runtime
+
+Expected:
+Solid JSX runtime
+
+Fix:
+Configure jsxImportSource in tsconfig.json
+or rawscript.config.ts
+
+
+================================================
+18. STRUCTURED LOGGING
+================================================
+
+Provide useful debug categories:
+
+[resolver]
+[compiler]
+[cache]
+[service-worker]
+[dependency]
+[security]
+[hmr]
+[config]
+
+Normal users should not receive noisy logs.
+
+Debug mode should expose enough information to diagnose real failures.
+
+
+================================================
+19. SECURITY — FIRST CLASS
+================================================
+
+Security must be implemented and tested, not merely documented.
+
+Test path traversal including:
+- ../
+- ..- encoded ../
+- encoded separators
+- double encoding
+- mixed separators
+- malformed URLs
+- symlink/path edge cases where relevant
+
+Also test:
+- cache poisoning
+- malformed import maps
+- malformed Service Worker messages
+- hostile dependency scenarios
+- unexpected content types
+- origin/scope mistakes
+- extremely large inputs
+- excessive compilation requests
+- resource exhaustion
+
+Use adversarial tests, not only happy paths.
+
+
+================================================
+20. RESOURCE LIMITS
+================================================
+
+Because Rawscript compiles source in the browser, introduce practical protections around:
+- source size
+- compilation frequency
+- cache size
+- concurrent compilation work
+- malformed/pathological inputs
+
+The runtime should fail gracefully rather than freezing or exhausting the browser.
+
+
+================================================
+21. CSP COMPATIBILITY
+================================================
+
+Audit Rawscript against realistic Content Security Policies.
+
+Consider:
+- script-src
+- worker-src
+- style-src
+- connect-src
+- relevant cross-origin policies
+
+Runtime UI, error overlay and debug UI should not unnecessarily depend on inline styles.
+
+Prefer self-hosted/static CSS where practical.
+
+Document unavoidable requirements.
+
+Do not claim CSP compatibility until tested.
+
+
+================================================
+22. SECURITY HEADERS
+================================================
+
+Make the CLI/server capable of sensible security headers where appropriate.
+
+Investigate/test:
+- Content-Security-Policy
+- X-Content-Type-Options
+- Referrer-Policy
+- Permissions-Policy
+- relevant cross-origin policies
+
+Do not blindly add headers that break legitimate Rawscript behavior.
+
+Test them.
+
+
+================================================
+23. RELEASE SECURITY
+================================================
+
+Modernize release security.
+
+Prefer npm Trusted Publishing/OIDC where supported instead of long-lived publishing credentials.
+
+Release pipeline should resemble:
+
+tests
+ ↓
+typecheck
+ ↓
+security checks
+ ↓
+build
+ ↓
+artifact verification
+ ↓
+publish
+ ↓
+provenance
+
+Keep package versions synchronized.
+
+Automate version-sensitive compiler/runtime updates where possible.
+
+
+================================================
+24. ESBUILD-WASM VERSION MANAGEMENT
+================================================
+
+The runtime currently requires synchronized WASM references.
+
+Create a reliable version-management process so:
+- browser shim version
+- WASM binary version
+- cache namespace/version
+- compatibility tests
+
+remain synchronized.
+
+When upgrading esbuild:
+- run runtime tests
+- run CLI tests
+- run JSX tests
+- run browser E2E
+- run performance benchmarks
+- verify cache behavior
+- verify Service Worker behavior
+
+Do not blindly upgrade.
+
+
+================================================
+25. TESTING — PRODUCTION CONFIDENCE
+================================================
+
+Preserve and expand the existing unit and Playwright foundation.
+
+Add tests for:
+
+Runtime:
+- TypeScript
+- TSX
+- JSX modes
+- import maps
+- relative imports
+- bare imports
+- cache correctness
+- corrupt cache
+- Service Worker updates
+- diagnostics
+- fallback behavior
+
+CLI:
+- npm/pnpm dependency resolution
+- local bundling
+- code splitting
+- source maps
+- tsconfig
+- JSX configuration
+- typecheck
+- production output
+
+Security:
+- traversal
+- malformed input
+- cache poisoning
+- resource limits
+- CSP
+
+Browser:
+- Chromium
+- Firefox
+- WebKit/Safari-equivalent testing
+- at least one realistic mobile/browser validation before 1.0
+
+
+================================================
+26. PERFORMANCE — MEASURE, DON'T GUESS
+================================================
+
+Measure:
+- first load
+- WASM initialization
+- subsequent load
+- transpilation
+- cache hit
+- cache miss
+- dependency resolution
+- production build
+- bundle size
+- memory where practical
+
+The current first-load WASM cost is an architectural tradeoff.
+
+Optimize obvious waste.
+
+Do NOT spend months trying to eliminate an inherent WASM initialization/download cost unless measurements show a meaningful improvement is achievable.
+
+Make the first-load experience understandable with honest loading/progress feedback.
+
+Never publish arbitrary performance claims without measurements.
+
+
+================================================
+27. MPA / MULTI-ENTRY SUPPORT
+================================================
+
+Do not let multi-page support silently become a giant bundler project.
+
+Keep the architecture capable of multiple HTML entry points where practical.
+
+However, MPA is not more important than runtime correctness and adoption.
+
+Treat advanced MPA functionality as:
+- required if real users need it for v1,
+- otherwise clearly documented post-v1.
+
+Do not build a Vite-like HTML pipeline merely to check a box.
+
+
+================================================
+28. CLI PREVIEW
+================================================
+
+Improve:
+
+rawscript preview
+
+so it can explicitly accept a directory/output location, conceptually:
+
+rawscript preview --dir dist
+
+It should serve generated production output as it would be deployed.
+
+Keep this simple.
+
+
+================================================
+29. DOCUMENTATION AND ADOPTION
+================================================
+
+Documentation is a product feature.
+
+Document:
+1. What Rawscript is
+2. Why it exists
+3. When to use it
+4. When NOT to use it
+5. Zero-config usage
+6. npm/pnpm project usage
+7. Self-hosted mode
+8. Production CLI builds
+9. JSX configuration
+10. Type checking
+11. tsconfig support
+12. security
+13. deployment
+14. limitations
+15. troubleshooting
+
+Create reference examples for:
+- plain TypeScript
+- React
+- Preact
+- Solid
+- npm dependencies
+- self-hosted usage
+- production CLI build
+
+Do not market Rawscript as something it is not.
+
+Honest limitations increase trust.
+
+
+================================================
+30. BENCHMARKS AND REAL-WORLD VALIDATION
+================================================
+
+Create reproducible benchmarks.
+
+Compare relevant workflows where useful against:
+- traditional Vite workflow
+- direct browser JavaScript
+- other browser-native TypeScript approaches
+
+Do not benchmark only favorable cases.
+
+More importantly, create real-world reference applications.
+
+Examples:
+- documentation demo
+- classroom example
+- interactive article
+- small browser tool
+- single-page internal utility
+- prototype
+- lightweight static application
+
+Use these to discover actual bugs and missing features.
+
+The question is always:
+
+"Would a developer actually choose Rawscript here?"
+
+
+================================================
+31. DO NOT BUILD FEATURES WITHOUT A USER REASON
+================================================
+
+Every major feature must answer:
+
+Who needs this?
+What problem does it solve?
+Why can't an existing standard/tool solve it?
+Does it preserve Rawscript's identity?
+Does it increase real adoption?
+
+If the answer is unclear, defer it.
+
+Complexity is a cost.
+
+
+================================================
+32. EXPLICITLY DEFERRED FEATURES
+================================================
+
+Unless real adoption demonstrates a strong need, defer:
+- full Rawscript package manager
+- custom registry
+- custom semver
+- custom lockfile
+- custom package store
+- giant plugin API
+- mandatory WebSocket dev server
+- state-preserving HMR as core functionality
+- SSR
+- giant framework-specific integrations
+- full Vite migration tooling
+- complete MPA/bundler replacement
+- custom AST parser replacing the lightweight resolver
+- complex LRU cache database
+- telemetry by default
+
+Do not implement these merely because they sound "production-grade."
+
+
+================================================
+33. FEATURES THAT MUST NOT BE DEFERRED
+================================================
+
+These are required for the intended production-maturity target:
+
+- runtime identity preservation
+- CDN-independent/self-hosted production path
+- local dependency bundling through esbuild
+- import-map based dependency strategy
+- correct JSX configuration
+- tsconfig support
+- typecheck capability
+- content-aware cache keys
+- corrupt-cache recovery
+- robust Service Worker update protocol
+- actionable diagnostics
+- security testing
+- traversal protection
+- resource limits
+- CSP audit/hardening
+- release security/provenance
+- automated testing
+- browser compatibility validation
+- honest documentation
+- real-world reference projects
+- reproducible benchmarks
+
+
+================================================
+34. EXECUTION ORDER
+================================================
+
+Do NOT execute dozens of phases breadth-first.
+
+Implement focused release-sized increments.
+
+PHASE A — CORRECTNESS + DX
+--------------------------
+1. Read and understand the current architecture.
+2. Establish baseline tests and benchmarks.
+3. Add tsconfig support.
+4. Fix/standardize JSX configuration.
+5. Add typecheck command.
+6. Add minimal rawscript.config.ts if needed.
+7. Improve diagnostics.
+8. Implement content-aware cache keys.
+9. Implement corrupt-cache recovery.
+10. Improve Service Worker update protocol.
+
+PHASE B — DEPENDENCIES + PRODUCTION BUILD
+-----------------------------------------
+11. Use npm/pnpm as dependency authority.
+12. Stop expanding custom dependency management.
+13. Generate/use browser import maps for local dependencies.
+14. Add local dependency bundling through native esbuild.
+15. Add dynamic imports/code splitting where appropriate.
+16. Make production output capable of avoiding runtime CDN dependency.
+17. Add preview --dir support.
+18. Verify dev/production JSX equivalence.
+
+PHASE C — SELF-HOSTING
+----------------------
+19. Make runtime/compiler assets self-hostable.
+20. Make CDN mode optional rather than mandatory.
+21. Define/test practical offline behavior.
+22. Verify restricted-network usage.
+23. Document deployment architecture.
+
+PHASE D — SECURITY + RELEASE
+----------------------------
+24. Traversal/security test matrix.
+25. Resource limits.
+26. Cache poisoning/malformed-input tests.
+27. CSP hardening.
+28. Security headers.
+29. SBOM/dependency security using existing ecosystem tools.
+30. Trusted publishing/OIDC.
+31. Release provenance.
+32. Reproducibility checks where practical.
+
+PHASE E — ADOPTION + DX
+-----------------------
+33. Documentation overhaul.
+34. Reference applications.
+35. Benchmarks.
+36. Troubleshooting guide.
+37. Browser/device validation.
+38. Collect real-world feedback.
+39. Fix adoption blockers.
+40. Only then evaluate additional features.
+
+
+================================================
+35. VERSION 1.0 DEFINITION
+================================================
+
+Do not call the project 1.0 simply because a checklist is complete.
+
+1.0 should mean:
+- core runtime is stable
+- production dependency workflow works
+- self-hosting works
+- errors are understandable
+- security baseline is strong
+- tests are reliable
+- browser support is verified
+- documentation is credible
+- real developers can use it successfully
+
+Most importantly:
+
+At least some developers other than the author should have used Rawscript for real work.
+
+Real adoption evidence is more important than feature count.
+
+
+================================================
+36. NON-NEGOTIABLE ENGINEERING RULES
+================================================
+
+1. Never destroy the zero-config browser runtime.
+2. Never make the CLI mandatory for the basic Rawscript experience.
+3. Never build a second npm.
+4. Never build a second Vite merely to make the feature list look complete.
+5. Use esbuild instead of reinventing bundling.
+6. Use npm/pnpm instead of reinventing dependency management.
+7. Prefer browser standards, especially import maps, over proprietary mechanisms.
+8. Keep CDN mode because it is part of Rawscript's convenience story, but add a serious self-hosted/local path.
+9. Dev and production must use equivalent JSX semantics.
+10. Never confuse transpilation with type checking.
+11. Never let stale/corrupt cache silently produce incorrect code.
+12. Service Worker updates must be controlled and versioned.
+13. HMR must remain optional; zero-config runtime must not depend on WebSockets.
+14. Security must be tested, not merely documented.
+15. Do not claim a feature works until automated tests verify it.
+16. Do not claim performance numbers without measurement.
+17. Do not add complexity without a demonstrated user problem.
+18. Preserve backwards compatibility wherever practical.
+19. Keep runtime dependencies at zero unless a future change proves an unavoidable requirement and the architectural decision is explicitly justified.
+20. The final judge is real-world developer adoption, not resume value.
+
+
+================================================
+37. HOW YOU SHOULD WORK AS THE AI ENGINEER
+================================================
+
+Do not respond with another giant theoretical roadmap.
+
+Start working on the codebase.
+
+Before modifying a subsystem:
+- inspect the existing implementation
+- inspect existing tests
+- identify invariants
+- make the smallest sound architectural change
+- add tests
+- run relevant tests
+- verify backwards compatibility
+- document meaningful behavior changes
+
+Work incrementally.
+
+After each meaningful group of changes:
+- run unit tests
+- run typecheck
+- run relevant E2E tests
+- run build
+- run security tests where applicable
+- report what changed and what remains
+
+If an existing design conflicts with this roadmap, do not blindly rewrite it.
+
+Preserve the original design where it remains valuable.
+
+If a proposed feature would turn Rawscript into a Vite/npm competitor, stop and choose the simpler integration-based approach.
+
+Do not ask for permission for every obvious implementation detail.
+
+Make technically sound decisions within these constraints and continue implementation.
+
+Only stop to ask a question if there is a genuinely blocking ambiguity that cannot be resolved from the existing code, standards, or this roadmap.
+
+
+================================================
+38. FINAL DEFINITION OF "10/10"
+================================================
+
+Rawscript is NOT 10/10 because it has:
+- 40 phases
+- 100 features
+- a complicated architecture
+- a huge CLI
+- fancy HMR
+- a custom package manager
+- impressive benchmarks
+- a long README
+
+Rawscript is 10/10 when:
+
+A developer discovers it.
+
+They immediately understand the value.
+
+They can start with almost zero setup.
+
+They can grow into a more professional workflow when needed.
+
+Their dependencies work reliably.
+
+Their JSX configuration works correctly.
+
+Their TypeScript configuration is respected.
+
+Their errors are understandable.
+
+Their cached output is correct.
+
+Service Worker updates do not randomly break their app.
+
+They can self-host critical assets.
+
+They can build production output without depending on third-party CDNs.
+
+They can type-check their project.
+
+Security is taken seriously.
+
+The documentation tells the truth.
+
+The browser behavior is tested.
+
+The CLI is useful without becoming another Vite.
+
+And most importantly:
+
+THE DEVELOPER CHOOSES RAWSCRIPT AGAIN.
+
+That is the definition of success.
+
+Do not compromise this goal for feature count, architectural elegance, resume value, or imitation of existing tools.

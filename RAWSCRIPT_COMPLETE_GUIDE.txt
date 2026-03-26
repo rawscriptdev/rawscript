@@ -1,0 +1,1327 @@
+================================================================================
+RAWSCRIPT — COMPLETE A-TO-Z PROJECT GUIDE
+Version 0.2.0 (August 2026)
+================================================================================
+
+This document is a single, self-contained reference for the rawscript
+monorepo. After reading it you should understand:
+
+  - WHAT rawscript is and what problem it solves
+  - HOW it works, end to end, at every layer (browser, service worker,
+    CLI, test suite, CI/CD)
+  - HOW the code is organized, file by file
+  - HOW to use it as a developer and how to consume it as a user
+  - The design decisions, constraints, and known limitations
+
+No prior knowledge of the project is required.
+
+--------------------------------------------------------------------------------
+TABLE OF CONTENTS
+--------------------------------------------------------------------------------
+
+  1.  Elevator pitch
+  2.  The problem it solves
+  3.  Quick start (user perspective)
+  4.  How it works — the core idea
+  5.  The Service Worker (sw.ts)
+  6.  The transpiler (transpiler.ts)
+  7.  The import rewriter (resolver.ts)
+  8.  JSX / framework support
+  9.  Boot sequence (boot.ts)
+ 10.  Hot reload (hmr.ts + watcher.ts)
+ 11.  Blob URL fallback (fallback.ts)
+ 12.  Error overlay (errors.ts)
+ 13.  Debug panel (debugpanel.ts)
+ 14.  Loader and environment detection (loader.ts, env.ts)
+ 15.  Data attributes (configuration surface)
+ 16.  The CLI (packages/cli)
+ 17.  The dev servers (serve.ts, scripts/serve.mjs)
+ 18.  Repository layout — every file explained
+ 19.  The build pipeline (runtime + CLI outputs)
+ 20.  Framework examples
+ 21.  Testing strategy (unit + e2e, 3 browsers)
+ 22.  CI and release automation (GitHub Actions)
+ 23.  Browser support
+ 24.  Performance characteristics
+ 25.  Design invariants and rules
+ 26.  Known limitations and tradeoffs
+ 27.  Development workflow (commands)
+ 28.  Versioning and release checklist
+ 29.  Project metadata
+ 30.  Glossary
+
+
+================================================================================
+1. ELEVATOR PITCH
+================================================================================
+
+rawscript is a zero-install, zero-config, zero-dependency library that lets
+you write TypeScript (including JSX/TSX with React, Preact, Solid, Vue via
+h(), and any other framework) and run it directly in the browser — with no
+build step, no Node process, no npm install, and no terminal required.
+
+Your entire setup is two script tags:
+
+    <script src="https://unpkg.com/rawscript"></script>
+    <script type="module" src="./main.ts"></script>
+
+The first script loads the rawscript runtime. The second is an ordinary
+browser module script that just happens to point at a TypeScript file. The
+browser's own module loader fetches it, a Service Worker intercepts the
+request, compiles the TypeScript to JavaScript IN THE BROWSER using
+esbuild's WebAssembly build, rewrites bare npm imports (like 'react') to
+CDN URLs (esm.sh), and hands the result back to the browser as if it had
+always been JavaScript.
+
+A companion CLI (`rawscript build` / `rawscript serve`) exists for
+production: it bundles the same project into minified static JS with no
+rawscript dependency at runtime.
+
+The runtime itself ships with ZERO npm dependencies. Everything it needs
+(esbuild WASM, React, etc.) is loaded from public CDNs at runtime.
+
+
+================================================================================
+2. THE PROBLEM IT SOLVES
+================================================================================
+
+Traditional TypeScript development requires:
+
+  - A Node.js environment with npm/pnpm/yarn
+  - A bundler (webpack, Vite, esbuild, Rollup, ...)
+  - Configuration files (tsconfig, bundler configs)
+  - A dev server with HMR plumbing
+  - A build step before anything can run in a browser
+
+This excludes casual users: someone who wants to write a TypeScript demo
+for a blog post, teach TypeScript in a classroom where students should not
+install toolchains, or prototype an interactive tool as a single HTML file
+that runs anywhere.
+
+rawscript removes ALL of that. The only requirements are a modern browser
+and (for npm packages) network access to public CDNs. The browser itself
+does the compiling.
+
+The niche is "between a playground and a real project":
+
+  - TypeScript playground: sandboxed, cannot open your own files
+  - StackBlitz/CodeSandbox: full dev environment, requires their platform
+  - rawscript: works with YOUR files, on YOUR server, with no account,
+    no installation, no build step — but you pay for that simplicity in
+    browser support floor (Firefox 114+, Safari 16.4+) and by accepting
+    CDN dependencies for npm packages.
+
+For production-quality builds, the CLI bridges the gap: it produces a
+minified bundle with no rawscript runtime inside — only npm dependencies
+still resolve through esm.sh at runtime.
+
+
+================================================================================
+3. QUICK START (USER PERSPECTIVE)
+================================================================================
+
+3.1 Development / "no-build" usage
+----------------------------------
+
+Serve a folder with ANY static file server (or even the rawscript CLI
+server). Create index.html:
+
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>My App</title>
+    </head>
+    <body>
+      <div id="app"></div>
+      <script src="https://unpkg.com/rawscript"></script>
+      <script type="module" src="./main.ts"></script>
+    </body>
+    </html>
+
+And main.ts:
+
+    import React, { useState } from 'react'
+    import { createRoot } from 'react-dom/client'
+
+    function App() {
+      const [count, setCount] = useState(0)
+      return (
+        <button onClick={() => setCount(c => c + 1)}>
+          count: {count}
+        </button>
+      )
+    }
+
+    createRoot(document.getElementById('app')!).render(<App />)
+
+Open the page. rawscript takes over, compiles main.ts and App.tsx in the
+browser, resolves react / react-dom/client to esm.sh, and the app renders.
+Edit the .ts file and the page hot-reloads automatically (dev mode only).
+
+3.2 Production usage (CLI)
+---------------------------
+
+    npx rawscript build            # reads index.html, writes dist/
+    npx rawscript serve            # static server for the built output
+
+The output has no rawscript runtime, no in-browser transpilation, and is
+minified with inline source maps. npm imports remain external and resolve
+via an importmap injected into the output HTML pointing at esm.sh.
+
+3.3 Hosting the runtime yourself
+--------------------------------
+
+The Service Worker must be served from your own origin to control your
+files (see section 9/16 for details). Copy two files:
+
+    dist/rawscript.js      ->  /dist/rawscript.js   (from the npm package)
+    dist/rawscript-sw.js   ->  /rawscript-sw.js     (must be at root)
+
+and reference the local copy: <script src="/dist/rawscript.js">.
+
+
+================================================================================
+4. HOW IT WORKS — THE CORE IDEA
+================================================================================
+
+The entire trick is one request interception.
+
+Browsers natively load ES modules over HTTP. rawscript's Service Worker
+intercepts every GET request whose URL ends in .ts or .tsx, compiles the
+raw source into JavaScript, and responds with content-type
+application/javascript. The browser's module loader is never aware that
+TypeScript was involved.
+
+    Browser                    Service Worker              Network
+    -------                    --------------              -------
+    import './main.ts'   -->   fetch('/main.ts')      -->  your server
+                         <--   transpile(source)           (raw .ts text)
+                         <--   rewriteImports(js)
+    import './main.js' <--     Response(js, {
+                                 'Content-Type':
+                                 'application/javascript' })
+
+Two things make this fast:
+
+ 1. The esbuild WASM binary (~8 MB) is pre-cached by the SW on its
+    'install' event (cache name rawscript-wasm-v1). Compilation happens
+    against a WebAssembly.Module compiled from those cached bytes, so the
+    compiler itself never hits the network after first install.
+
+ 2. Every transpiled module is cached in rawscript-transpiled-v1
+    (cache-first strategy). On subsequent loads the SW serves cached
+    compiled output without recompiling.
+
+The project has exactly two caches:
+
+    rawscript-wasm-v1          the esbuild.wasm binary
+    rawscript-transpiled-v1    compiled .ts/.tsx modules keyed by request
+
+On 'activate' the SW deletes any other 'rawscript-*' cache (stale cache
+purge, used when cache names are versioned up).
+
+
+================================================================================
+5. THE SERVICE WORKER (packages/runtime/src/sw.ts)
+================================================================================
+
+File: packages/runtime/src/sw.ts (built into dist/rawscript-sw.js, ESM)
+
+5.1 Lifecycle events
+--------------------
+
+  - install: opens rawscript-wasm-v1 and caches the esbuild.wasm binary
+    from https://unpkg.com/esbuild-wasm@0.20.2/esbuild.wasm. Calls
+    self.skipWaiting() so the new SW activates immediately.
+
+  - activate: self.clients.claim() (so already-open pages become
+    controlled without a manual reload) plus deletion of any
+    rawscript-* cache other than the two current ones.
+
+  - fetch: any non-.ts/.tsx GET is passed through untouched
+    (fetch(event.request)). .ts/.tsx GETs are handled by handleFetch.
+
+  - message: the SW accepts two message types (see 5.3).
+
+5.2 The transpile pipeline (handleFetch)
+----------------------------------------
+
+  For a .ts/.tsx request:
+
+  1. Check rawscript-transpiled-v1. If a cached response exists, serve it
+     (cache-first). This is what makes repeat visits instant.
+  2. Otherwise fetch the raw file from the network.
+  3. If the response is not OK (404 etc.), pass it through as-is — never
+     try to transpile an error body.
+  4. transpile(source, pathname, jsxConfig) via esbuild-wasm (section 6).
+  5. rewriteImports(compiledJs, knownImportmap) via resolver (section 7).
+  6. Return a new Response with
+     Content-Type: application/javascript; charset=utf-8, and store a
+     clone in the transpiled cache.
+  7. On transpile failure: parse the line:column out of the esbuild error
+     message, post a TRANSPILE_ERROR message to every window client (the
+     error overlay renders it — section 12), and return a tiny module that
+     does `throw new Error("rawscript: failed to transpile ...")`. This is
+     deliberate: a thrown module shows a clear error in the console instead
+     of an opaque "net::ERR_FAILED" network error.
+
+5.3 Message protocol (page <-> SW)
+----------------------------------
+
+  Page -> SW:
+
+    { type: 'IMPORTMAP', importmap: {...} }
+        Sent by boot.ts after registration, so the SW knows which bare
+        specifiers are already mapped by the page's importmap (those are
+        left untouched by the rewriter). Also re-sent after any SW update.
+
+    { type: 'CACHE_BUST', url: '...' }     (+ MessageChannel port)
+        Sent by the HMR system when a file changed (section 10). The SW
+        deletes the matching entry (or ALL entries when url is omitted —
+        the debug panel's "Bust Cache" button sends it without a url) from
+        rawscript-transpiled-v1, then posts { type: 'CACHE_BUSTED' } back
+        through the transferred port. The page only reloads after this ACK
+        so the reload can never re-serve stale cached output.
+
+  SW -> Page:
+
+    { type: 'TRANSPILE_ERROR', file, message, line, column }
+        Broadcast to all window clients on a transpile failure so the
+        error overlay (errors.ts) can render with a source code frame.
+
+  Inter-tab coordination uses a BroadcastChannel named 'rawscript-hmr'
+  (section 10.4).
+
+5.4 JSX configuration (getJsxConfig)
+------------------------------------
+
+The JSX transform is derived from the page's importmap (see section 8):
+
+  - importmap maps 'solid-js'        -> jsx: automatic, jsxImportSource 'solid-js/h'
+  - importmap maps 'react' to a URL  -> jsx: automatic, jsxImportSource 'preact/compat'
+    containing 'preact'              ->   (i.e. preact/compat projects)
+  - anything else                    -> jsx: automatic, jsxImportSource 'react'
+
+This makes the exact same app compile identically in dev (SW) and in
+production (CLI), because the CLI mirrors this policy (section 16.4).
+
+
+================================================================================
+6. THE TRANSPILER (packages/runtime/src/transpiler.ts)
+================================================================================
+
+File: packages/runtime/src/transpiler.ts
+
+The transpiler is a thin, lazy-initialized wrapper around esbuild's
+browser build:
+
+    import * as esbuild from 'https://unpkg.com/esbuild-wasm@0.20.2/esm/browser.js'
+
+Key points:
+
+  - esbuild-wasm is pinned to 0.20.2 in TWO places that must always match:
+      * transpiler.ts:  wasmURL 'https://unpkg.com/esbuild-wasm@0.20.2/esbuild.wasm'
+      * sw.ts imports the ESM browser shim from the same version
+    (The CLI uses the npm 'esbuild' package — see section 16 — never the
+    WASM build.)
+
+  - initializeFromCache(): the preferred init path. Because
+    URL.createObjectURL is NOT available inside a Service Worker, the SW
+    compiles the cached WASM bytes directly:
+        WebAssembly.compile(await cached.arrayBuffer())
+        esbuild.initialize({ wasmModule: module, worker: false })
+    This means after the first install, esbuild initialization NEVER hits
+    the network. If anything fails (no cache, corrupt cache), it falls
+    back to esbuild.initialize({ wasmURL }) which fetches the binary from
+    the CDN — the main-thread fallback path uses this too.
+
+  - Initialization is memoized in a single module-level promise so the
+    first transpile call performs init and everyone else awaits it.
+
+  - transpile(source, filename, jsxConfig):
+      loader = 'tsx' if filename ends with .tsx else 'ts'
+      esbuild.transform(source, { loader, format:'esm', target:'esnext',
+      sourcefile: filename, sourcemap:'inline', ...jsxConfig })
+
+    Output is ESM with an inline source map so browser devtools show the
+    original TypeScript source.
+
+  - WASM_CACHE = 'rawscript-wasm-v1' is exported and shared with sw.ts.
+    Bump the 'v1' when the esbuild-wasm version changes so existing
+    installs re-download the new binary (see section 28).
+
+The esbuild-wasm@0.20.2 version is the one that supports the
+'wasmModule' option (a compiled WebAssembly.Module), which is exactly
+what makes SW-side initialization-from-cache possible.
+
+
+================================================================================
+7. THE IMPORT REWRITER (packages/runtime/src/resolver.ts)
+================================================================================
+
+File: packages/runtime/src/resolver.ts
+
+Browsers cannot resolve bare specifiers like 'react' inside module code
+(only 'https://', 'http://', '/', './', '../'). esbuild's WASM transform
+leaves bare specifiers alone, so rawscript must rewrite them to absolute
+URLs before the browser fetches the module.
+
+7.1 The rule
+------------
+
+  - Bare specifiers are rewritten to https://esm.sh/<specifier>.
+  - Already-mapped specifiers (present in the page's importmap) are never
+    rewritten — the user's mapping wins.
+  - Relative (./x, ../x), absolute (/x), and full URL specifiers are never
+    touched.
+  - Version pins are preserved: 'react@18.3.1' becomes
+    https://esm.sh/react@18.3.1.
+  - Subpaths work: 'react-dom/client' becomes
+    https://esm.sh/react-dom/client; scoped packages work:
+    '@preact/signals-core' becomes https://esm.sh/@preact/signals-core.
+
+7.2 How it's implemented (deliberately regex-based)
+---------------------------------------------------
+
+This is a DOCUMENTED ARCHITECTURAL DECISION: no AST parser. It is a pure,
+zero-dependency regex engine with three match groups:
+
+  Group 1  `from 'spec'` / `from "spec"`       (import ... from)
+  Group 2  `import('spec')`                    (dynamic import)
+  Group 3  `import 'spec'`                     (side-effect import)
+
+Because regexes can produce false positives, two pre-passes run before the
+main regex, both length-preserving (column offsets in inline source maps
+stay valid):
+
+  a) neutralizeLineComments: `// ...` comment bodies are replaced with
+     spaces, so commented-out imports are never rewritten.
+
+  b) blankNonImportStrings: every string literal (single-quoted,
+     double-quoted, and backtick templates, honoring backslash escapes)
+     is replaced with spaces UNLESS it sits in import position — directly
+     after the tokens `from` / `import`, or after the `(` of a dynamic
+     `import(` — and the keyword itself is not nested inside another
+     string. This means text like
+        const msg = "import { x } from 'react'"
+     is left completely untouched.
+
+Replacement offsets are computed from the match positions and applied in
+reverse order so earlier offsets stay valid.
+
+7.3 Unit coverage
+-----------------
+
+The resolver has 22 unit tests (tests/unit/resolver.test.ts, run with
+node:test) covering: bare/double-quoted/versioned/scoped/subpath imports,
+dynamic and side-effect imports, relative/absolute/URL specifiers,
+commented-out imports, import-looking text inside strings and templates,
+importmap precedence, multiple imports per statement, and offset
+preservation across multiple statements.
+
+Known structural limitation: because it is regex-based, exotic constructs
+(e.g. template literals containing import statements with interpolated
+substrings) are not handled. This is accepted by design; such code is
+vanishingly rare in real apps.
+
+
+================================================================================
+8. JSX / FRAMEWORK SUPPORT
+================================================================================
+
+rawscript supports any framework by deriving the JSX transform from the
+page's importmap. All transforms use the AUTOMATIC JSX runtime (no
+`import React` required in source files — this is a deliberate deviation
+from a "classic React" plan recommendation, because automatic is what
+modern React/Preact/Solid code expects and works with all examples).
+
+    Framework   importmap entry                 JSX runtime used
+    ---------------------------------------------------------------
+    React       (none needed — default)         react/jsx-runtime
+    Preact      "react": "https://esm.sh/preact/compat"
+                                                preact/compat
+    Solid       "solid-js": "https://esm.sh/solid-js"
+                                                solid-js/h
+    Vue         (none)                          no JSX — use h()
+
+Consequences:
+  - The rewriter turns the generated `react/jsx-runtime` (or
+    preact/compat, solid-js/h equivalents) import into an esm.sh URL, and
+    the user's importmap maps `react` -> preact/compat etc., so Preact and
+    Solid projects never load real React.
+  - Vue does not use JSX at all; the Vue example uses the Composition API
+    with h(). .vue single-file components are NOT supported.
+  - The CLI mirrors this policy exactly (getJsxConfig in bundler.ts), so
+    dev and production output compile identically.
+
+Every mapping below was verified against live esm.sh at build time:
+  react/jsx-runtime, preact/compat, preact/compat/jsx-runtime,
+  solid-js, solid-js/h, solid-js/h/jsx-runtime, solid-js/web.
+
+
+================================================================================
+9. BOOT SEQUENCE (packages/runtime/src/boot.ts)
+================================================================================
+
+File: packages/runtime/src/boot.ts (built into dist/rawscript.js, IIFE)
+
+boot.ts is the main-thread entry point. Order of operations on page load:
+
+  1. Read the boot script tag: the LAST script whose src contains
+     'rawscript' (getScriptTag). Read data attributes from it:
+     data-sw-path, data-sw-inline, data-hmr-interval (section 15).
+
+  2. If data-hmr-interval is a valid number, override env.hmrInterval.
+     Enable HMR when env.isDev (localhost / 127.0.0.1).
+
+  3. If navigator.serviceWorker is missing entirely -> runFallback()
+     (section 11) and stop.
+
+  4. Show the first-load loading indicator (section 14.1).
+
+  5. Register the SW:
+       - inline mode (data-sw-inline): fetch the SW file, make a Blob
+         URL, register the Blob URL with { type: 'module' }. This exists
+         because a SW must be same-origin; loading the runtime from a CDN
+         makes /rawscript-sw.js cross-origin, and a Blob URL bypasses the
+         restriction.
+       - normal mode: navigator.serviceWorker.register(swPath,
+         { type: 'module' }) — module-type SW (Firefox 114+ requirement).
+
+  6. Registration failure -> warn, hide loader, runFallback().
+
+  7. First-load race handling — THE critical part:
+       if (registration.active && !navigator.serviceWorker.controller)
+       -> send the importmap to the SW, then location.reload().
+     On the very first visit, the SW is installed but does not yet control
+     the page, so the page's .ts requests were already served as raw
+     TypeScript (which the module loader rejects). One reload hands
+     control to the SW and everything works from then on.
+
+  8. If a NEW SW is found later (updatefound -> installing -> activated),
+     the page re-sends the importmap and reloads, picking up the update.
+
+  9. Normal (controlled) loads: send the importmap, hide the loader,
+     start the HMR watcher (section 10), initialize the HMR
+     BroadcastChannel, and instantiate the debug panel (section 13).
+
+  10. A window-level message listener renders the error overlay for any
+      TRANSPILE_ERROR message from the SW.
+
+  11. DOM-ready guard: if the document is still loading when boot runs,
+      wait for DOMContentLoaded before starting (module scripts execute
+      after parsing, classic scripts before, so both cases are covered).
+
+
+================================================================================
+10. HOT RELOAD (packages/runtime/src/hmr.ts + watcher.ts)
+================================================================================
+
+Files: packages/runtime/src/hmr.ts, packages/runtime/src/watcher.ts
+
+10.1 Design
+-----------
+
+HMR is deliberately SIMPLE: no WebSocket, no dev server protocol, no Node
+process. It is HTTP HEAD polling with ETag / Last-Modified comparison,
+gated to dev origins (localhost, 127.0.0.1, 0.0.0.0 and subdomains of
+them) and requires a registered SW.
+
+10.2 The watcher (watcher.ts)
+-----------------------------
+
+startWatcher() is called from boot.ts. It returns immediately unless:
+  - the origin is a dev origin, AND
+  - serviceWorker is available, AND
+  - env.isHmrEnabled (true in dev mode)
+Then it delegates to startHmrPolling().
+
+10.3 The poll loop (hmr.ts)
+---------------------------
+
+Every env.hmrInterval ms (default 1000):
+
+  1. Find every <script type="module"> whose src ends in .ts or .tsx.
+  2. For each, send a HEAD request and read etag / last-modified.
+  3. If the server provides neither header -> skip (nothing to compare).
+  4. FIRST observation: record the headers in data-etag / data-lm DOM
+     attributes. Never reload on the first observation — this baseline
+     recording fixes the infinite-reload bug that occurs when the
+     attributes are initially absent and would otherwise look "changed".
+  5. Later observations: if etag or last-modified differs from the stored
+     baseline -> bustCacheAndReload(src); otherwise refresh the baseline
+     attributes.
+  6. Fetch errors are swallowed (e.g. file deleted mid-poll).
+
+10.4 Cache bust with ACK (bustCacheAndReload)
+---------------------------------------------
+
+The reload must not race the cache deletion, or the SW would re-serve the
+stale cached module:
+
+  1. Open a MessageChannel.
+  2. Arm a 1500 ms fail-safe timeout that reloads anyway.
+  3. navigator.serviceWorker.ready -> postMessage
+     { type: 'CACHE_BUST', url: src } to the active SW, transferring
+     channel.port2.
+  4. The SW deletes the entry and posts { type: 'CACHE_BUSTED' } back on
+     the port; the page then clears the fail-safe and calls
+     location.reload().
+  5. On the reload, the module is re-fetched and recompiled; the poll
+     loop re-records the new baseline.
+
+10.5 Multi-tab coordination (BroadcastChannel)
+----------------------------------------------
+
+A BroadcastChannel named 'rawscript-hmr' is opened on every controlled
+page. When one tab reloads due to HMR it posts
+{ type: 'rawscript-reload', filename } so all other tabs on the same
+origin reload too. The message is sent on a throwaway channel that is
+closed after 100 ms so the sender doesn't receive its own notification
+loop. This keeps multiple tabs in sync after an edit.
+
+The module also exposes stopHmrPolling() (used by tests / teardown) and
+notifyHmrChange(filename) for programmatic reloads.
+
+HMR is disabled entirely outside dev origins — a production site never
+polls.
+
+
+================================================================================
+11. BLOB URL FALLBACK (packages/runtime/src/fallback.ts)
+================================================================================
+
+File: packages/runtime/src/fallback.ts
+
+Service Workers do not exist on file:// protocol, in cross-origin iframes,
+or in some browser configurations. runFallback() is invoked by boot.ts
+when SWs are unavailable or registration fails. It:
+
+  1. No-ops if serviceWorker IS available (SW path wins).
+  2. Finds all module scripts with .ts/.tsx src.
+  3. Warns loudly (it is a degraded mode).
+  4. Reads the page importmap.
+  5. For each script:
+       - fetch the source
+       - transpile on the MAIN thread with the same esbuild-wasm build
+       - rewrite bare imports (same resolver)
+       - recursively rewrite RELATIVE .ts/.tsx imports to Blob URLs of
+         their own compiled output (relative non-TS imports like JSON/CSS
+         are left alone)
+       - create a Blob of the compiled module and point the script's src
+         at the Blob URL
+  6. Caches Blob URLs per source URL and guards against cycles with an
+     in-progress set, so diamond-shaped import graphs work.
+
+Limitations (by design): no cross-load caching (every load recompiles),
+main-thread transpilation (blocks UI), and it cannot know when files
+change. It exists to make rawscript work EVERYWHERE, not as a preferred
+path.
+
+
+================================================================================
+12. ERROR OVERLAY (packages/runtime/src/errors.ts)
+================================================================================
+
+File: packages/runtime/src/errors.ts
+
+When a transpile fails, the SW sends TRANSPILE_ERROR and the page renders
+a full-screen overlay:
+
+  - The esbuild error message with file, line, and column.
+  - A source code frame: the actual source file is fetched and the lines
+    around the error are shown with a gutter, a '>' marker on the error
+    line, and a '^' caret at the error column. If the file cannot be
+    fetched, a frame is synthesized from the error message itself.
+  - A close button (top-right 'x'), a Dismiss button, and an automatic
+    dismiss 10 seconds after display.
+
+Style is inline (fixed, z-index 99999, dark card). It auto-hides after
+10 s unless dismissed.
+
+
+================================================================================
+13. DEBUG PANEL (packages/runtime/src/debugpanel.ts)
+================================================================================
+
+File: packages/runtime/src/debugpanel.ts
+
+A development-only inspector panel, always instantiated but hidden until
+toggled.
+
+  - Toggle: Ctrl+Shift+\ (or Cmd+Shift+\ on macOS). The 'Backslash' key
+    code is used because Ctrl+Shift+R is reserved by browsers for
+    "Reload without cache" and is deliberately avoided. Esc closes.
+  - Shows:
+      * Service Worker status (active SW script URL)
+      * The registered importmap (raw JSON)
+      * HMR status ("Disabled in production" off dev origins)
+      * File-change polling status
+      * A performance/status line
+  - Buttons:
+      * Bust Cache — posts { type: 'CACHE_BUST' } (no URL) to the SW,
+        clearing ALL transpiled entries.
+      * Reload — location.reload().
+
+The panel listens for a DEBUG_PANEL_REQUEST message (the SW API surface
+is extended by posting from the page; the current implementation reads
+registration.active.scriptURL).
+
+
+================================================================================
+14. LOADER AND ENVIRONMENT DETECTION
+================================================================================
+
+14.1 Loader (packages/runtime/src/loader.ts)
+--------------------------------------------
+
+showLoadingIndicator() appends a fixed, full-screen overlay
+(".rawscript-loader") with a lightning bolt and "Rawscript is loading..."
+message. It is shown ONLY in dev mode (env.isDev). hideLoadingIndicator()
+removes any existing .rawscript-loader element. This covers the seconds
+spent on first-load WASM initialization.
+
+14.2 Environment detection (packages/runtime/src/env.ts)
+---------------------------------------------------------
+
+A plain exported singleton object with feature flags, evaluated once at
+load time:
+
+  - swSupported            'serviceWorker' in navigator
+  - esmSupported           'noModule' in document.createElement('script')
+  - broadcastChannelSupported   'BroadcastChannel' in window
+  - fetchSupported         'fetch' in window
+  - isSWActive             false until boot registers successfully
+  - isDev                  hostname is localhost / 127.0.0.1
+  - isHmrEnabled           set by boot.ts (dev only)
+  - hmrInterval            ms or null; set from data-hmr-interval
+  - platform, userAgent    informational
+
+
+================================================================================
+15. DATA ATTRIBUTES (CONFIGURATION SURFACE)
+================================================================================
+
+The entire runtime is configured through data attributes on the boot
+script tag (read by boot.ts):
+
+  <script src="https://unpkg.com/rawscript"
+          data-sw-path="/static/rawscript-sw.js"
+          data-sw-inline
+          data-hmr-interval="500"></script>
+
+  data-sw-path=<path>
+      Overrides the SW location (default '/rawscript-sw.js'). Use when
+      hosting the SW at a non-root path. NOTE: a SW can only control
+      requests in paths under its own location, so keep it as high in
+      the URL hierarchy as possible.
+
+  data-sw-inline
+      Presence enables inline (Blob URL) SW registration. Required when
+      the runtime itself is loaded cross-origin from a CDN, because the
+      SW must be same-origin. Slightly slower on first registration,
+      functionally identical afterwards.
+
+  data-hmr-interval=<ms>
+      HMR polling interval in milliseconds (default 1000). Only active
+      on dev origins.
+
+There is no other configuration. Zero config is a feature, not an
+oversight.
+
+
+================================================================================
+16. THE CLI (packages/cli)
+================================================================================
+
+Package name: rawscript-cli — binary name: rawscript
+Entry: packages/cli/src/index.ts, bundled into dist/cli.mjs
+
+16.1 Commands
+-------------
+
+  rawscript build [--entry index.html] [--out dist] [--no-minify]
+      Production build. Reads the entry HTML (default ./index.html),
+      finds every <script type="module" src="*.ts|*.tsx">, bundles each
+      with the esbuild Node API, and writes .js files + a rewritten
+      index.html into the output directory (default ./dist).
+
+  rawscript serve [--port 3000]
+      Static file server for the CURRENT WORKING DIRECTORY with
+      rawscript-friendly headers (section 17). Ctrl+C to stop.
+
+  rawscript --version  -> prints the version (0.2.0)
+
+16.2 The bundler (packages/cli/src/bundler.ts)
+----------------------------------------------
+
+For each entry script, esbuild is invoked with:
+
+  entryPoints: [abs path], bundle: true, format: 'esm',
+  platform: 'browser', target: 'es2022',
+  minify: true (unless --no-minify), sourcemap: 'inline',
+  packages: 'external', metafile: true, write: false,
+  plus the importmap-derived JSX config (section 8)
+
+  - packages: 'external' keeps ALL npm imports unbundled. esbuild's
+    metafile is then scanned for import-statement and dynamic-import
+    entries whose paths are bare specifiers; those become the esm.sh
+    importmap entries.
+
+  - The output HTML is rewritten:
+      1. The rawscript runtime script tag is stripped entirely — the
+         production output has NO dependency on rawscript itself.
+      2. Module script srcs are renamed .ts/.tsx -> .js.
+      3. An importmap is injected BEFORE the first module script, mapping
+         every externalized bare specifier to https://esm.sh/<spec>.
+         A user-provided importmap in the entry HTML is preserved with
+         the user's entries taking precedence over generated ones.
+
+  - Relative imports between local files are bundled (inlined), so the
+    output is a small set of self-contained .js files. Npm dependencies
+    remain runtime network imports (esm.sh).
+
+16.3 The serve implementation (packages/cli/src/serve.ts)
+---------------------------------------------------------
+
+  - Serves process.cwd().
+  - URL decode + query-string strip; directory requests fall back to
+    index.html.
+  - Path-traversal guard: the resolved path must remain inside the root
+    (path.relative check), otherwise 403.
+  - ETag ("<size-hex>-<mtimeMs-hex>") and Last-Modified on every file;
+    If-None-Match -> 304. These headers are what the runtime's HMR
+    polling relies on.
+  - MIME table covers .html/.js/.mjs/.css/.json/.map/.wasm/.ts/.tsx
+    (.ts/.tsx are served as application/typescript — the raw text; the SW
+    compiles them), plus images and text types.
+  - Direct-execution convenience: `node src/serve.ts` (dev script in
+    package.json) starts the server. The guard checks
+    process.argv[1].endsWith('serve.ts'), which the BUNDLED cli.mjs never
+    matches (it invokes serve() through index.ts). This exact distinction
+    prevents the CLI from auto-starting a server on every command — a bug
+    that was found and fixed during development.
+
+16.4 CLI build (packages/cli/build.mjs)
+---------------------------------------
+
+Bundles src/index.ts into dist/cli.mjs with esbuild:
+
+  format: 'esm', platform: 'node', target: 'node18',
+  banner: '#!/usr/bin/env node' (so npm installs a working bin),
+  external: ['esbuild', 'commander']
+
+  IMPORTANT: 'commander' MUST stay external. Commander is CommonJS, and
+  bundling a CJS module into an ESM output fails with
+  "Dynamic require of 'events' is not supported" (observed during
+  development). esbuild is also external because it is a native-adjacent
+  dependency that must resolve from node_modules at runtime.
+
+The CLI's runtime dependencies are therefore esbuild ^0.20.2 and
+commander ^11.0.0 — never part of the browser runtime package.
+
+
+================================================================================
+17. THE DEV SERVERS
+================================================================================
+
+There are two nearly identical static servers:
+
+  - scripts/serve.mjs — the repo dev server and the Playwright web
+    server. Serves the REPO ROOT on :3000 (PORT env var or first argv
+    overrides; the test suite starts it on 4300). Same MIME table, same
+    ETag/Last-Modified/304 logic, same traversal guard.
+
+  - packages/cli/src/serve.ts — the CLI's server (serves cwd, as above).
+
+Both exist because the test harness needed a stable, known-root server
+independent of the CLI, and the CLI needs one that serves the current
+directory. MIME behavior and headers are identical so behavior in tests
+matches behavior in production use.
+
+Note: pages requested by tests use the transient .ts response served as
+application/typescript. On the FIRST (uncontrolled) load, before the SW
+takes over, the browser attempts to execute that raw .ts and WebKit
+reports "not a valid JavaScript MIME type for module script". This is
+expected, disappears after boot's activation reload, and the test suite
+filters exactly that error (section 21).
+
+
+================================================================================
+18. REPOSITORY LAYOUT — EVERY FILE EXPLAINED
+================================================================================
+
+rawscript/  (git repo, branch feat/v0.2.0-import-rewriting)
+|
+|-- package.json                  root workspace manifest (private):
+|                                 scripts build/dev/serve/test/test:unit/
+|                                 test:e2e/typecheck; type: module;
+|                                 pnpm 9; @playwright/test devDep
+|
+|-- pnpm-workspace.yaml           workspace = packages/*
+|-- tsconfig.base.json            shared TS strictness (ES2022, ESNext,
+|                                 bundler resolution)
+|-- pnpm-lock.yaml                lockfile (pnpm)
+|-- playwright.config.ts          e2e config (section 21)
+|-- .gitignore                    node_modules, dist, test-results,
+|                                 playwright-report, etc.
+|-- LICENSE                       MIT
+|-- README.md                     user-facing documentation
+|-- CONTRIBUTING.md               contributor setup + conventions
+|-- .github/workflows/
+|   |-- ci.yml                    CI on push/PR (section 22)
+|   `-- publish.yml               npm publish on v* tags (section 22)
+|
+|-- packages/runtime/             THE BROWSER RUNTIME (zero deps)
+|   |-- package.json              name 'rawscript', version 0.2.0,
+|   |                             dependencies {} — THE invariant,
+|   |                             main/unpkg/jsdelivr -> dist/rawscript.js
+|   |-- build.js                  esbuild bundle script (section 19)
+|   |-- tsconfig.json             TS config (DOM libs, noEmit typecheck)
+|   |-- dist/                     build output:
+|   |   |-- rawscript.js            IIFE main-thread entry (~31 KB)
+|   |   `-- rawscript-sw.js         ESM service worker (~9 KB)
+|   `-- src/
+|       |-- boot.ts               main-thread entry (section 9)
+|       |-- sw.ts                 service worker (section 5)
+|       |-- transpiler.ts         esbuild-wasm wrapper (section 6)
+|       |-- resolver.ts           bare-import rewriter (section 7)
+|       |-- hmr.ts                polling + ACK'd cache bust (section 10)
+|       |-- watcher.ts            dev-mode HMR coordinator (section 10)
+|       |-- fallback.ts           Blob URL fallback (section 11)
+|       |-- errors.ts             error overlay (section 12)
+|       |-- debugpanel.ts         dev panel, Ctrl/Cmd+Shift+\ (section 13)
+|       |-- loader.ts             loading indicator (section 14)
+|       |-- env.ts                feature detection (section 14)
+|       `-- esbuild-wasm.d.ts     ambient module type for the CDN import
+|                                 (declares wasmModule option used by
+|                                 transpiler.ts)
+|
+|-- packages/cli/                 PRODUCTION CLI
+|   |-- package.json              name 'rawscript-cli', version 0.2.0,
+|   |                             bin rawscript -> dist/cli.mjs,
+|   |                             engines node >=18
+|   |-- build.mjs                 bundles the CLI (section 16.4)
+|   |-- tsconfig.json             TS config (node types)
+|   |-- dist/cli.mjs              built CLI (committed/created by build)
+|   `-- src/
+|       |-- index.ts              commander entry (build + serve)
+|       |-- bundler.ts            esbuild production bundler (section 16.2)
+|       `-- serve.ts              cwd static server (section 16.3)
+|
+|-- scripts/serve.mjs             repo root dev server (section 17)
+|
+|-- tests/
+|   |-- smoke.spec.ts             e2e: SW transpile + WASM pre-cache
+|   |-- jsx.spec.ts               e2e: importmap JSX detection
+|   |-- examples.spec.ts          e2e: all 5 framework examples render
+|   |-- cli.spec.ts               e2e: CLI build + serve round-trip
+|   `-- unit/
+|       `-- resolver.test.ts      22 node:test unit tests for resolver.ts
+|
+|-- examples/
+|   |-- vanilla/                  plain TS, no framework (h1 text)
+|   |-- react/                    React 19, useState counter, importmap
+|   |-- preact/                   Preact via react->preact/compat importmap
+|   |-- solid/                    Solid signals, solid-js/h JSX
+|   |-- vue/                      Vue 3 Composition API with h()
+|   `-- three/                    three.js WebGL rotating cube
+|
+|-- dist/rawscript.js             COPY of the built runtime (made by
+|                                 build.js for local dev + examples)
+|-- rawscript-sw.js               COPY of the SW at root (SW must be at
+|                                 root scope to control /examples/*)
+
+(The eight fabrication-era placeholder files that previously sat in the
+root — COMPLETE.md, FINAL_STATUS.md, etc. — were removed during cleanup.
+Only real files remain.)
+
+
+================================================================================
+19. THE BUILD PIPELINE
+================================================================================
+
+19.1 Runtime build (packages/runtime/build.js)
+----------------------------------------------
+
+Plain Node script (runs without compilation) using the esbuild npm
+package:
+
+  1. src/boot.ts -> dist/rawscript.js
+        format IIFE, platform browser, target es2022, bundled (all main-
+        thread modules inlined), NOT minified (kept readable).
+
+  2. src/sw.ts -> dist/rawscript-sw.js
+        format ESM, bundled so transpiler.ts + resolver.ts are inlined,
+        but the CDN import (https://unpkg.com/*) stays external — the SW
+        loads esbuild-wasm's browser shim at runtime from the CDN.
+
+  3. Copies dist/rawscript.js -> repo-root dist/ and dist/rawscript-sw.js
+     -> repo root. The examples reference /dist/rawscript.js; the SW must
+     live at /rawscript-sw.js for its scope to cover all routes.
+
+Runtime build: `pnpm build` (root) or `pnpm --filter rawscript build`.
+
+19.2 CLI build (packages/cli/build.mjs)
+---------------------------------------
+
+  src/index.ts -> dist/cli.mjs (section 16.4).
+  Run with: pnpm --filter rawscript-cli build.
+
+19.3 Typecheck
+--------------
+
+Each package runs tsc --noEmit with its own tsconfig (DOM libs for the
+runtime, Node types for the CLI); `pnpm typecheck` at the root runs all.
+
+19.4 Why two build steps for the runtime
+----------------------------------------
+
+The runtime is two files with different module formats and different
+bundling boundaries:
+  - rawscript.js (IIFE) must self-execute when loaded by a classic script
+    tag.
+  - rawscript-sw.js (ESM module worker) must keep its CDN import external
+    (it can never be bundled — esbuild-wasm's browser shim is fetched
+    from unpkg at runtime).
+
+
+================================================================================
+20. FRAMEWORK EXAMPLES
+================================================================================
+
+All examples follow the same shape: an index.html (importmap + runtime
+script + one module script) and one source file. They double as the e2e
+test fixtures (each asserts its rendered output):
+
+  - vanilla/: main.ts — typed DOM code only, no imports. h1
+    "rawscript works". The smoke test target: proves transpile works and
+    the WASM binary is pre-cached.
+  - react/: App.tsx — useState counter, imports react + react-dom/client.
+    The jsx test target: proves automatic JSX with react/jsx-runtime.
+  - preact/: main.tsx — identical React-style API but the importmap maps
+    react -> esm.sh/preact/compat, so Preact renders. Proves the
+    importmap-driven runtime swap.
+  - solid/: main.tsx — createSignal + render from solid-js/web with
+    solid-js/h JSX.
+  - vue/: main.ts — createApp + h() only (no JSX).
+  - three/: main.ts — full three.js scene with a rotating cube on canvas.
+
+The react/preact/solid/vue/three pages are each asserted to render their
+distinct h1 (or canvas for three) in all three browsers with NO page
+errors other than the known transient MIME one.
+
+
+================================================================================
+21. TESTING STRATEGY
+================================================================================
+
+21.1 Two tiers
+--------------
+
+  - Unit (node:test): 22 tests for resolver.ts — pure logic, no browser.
+    Run: pnpm test:unit  (node --test "tests/unit/*.test.ts").
+  - e2e (Playwright): 30 tests (10 specs x 3 browsers). Run:
+    pnpm test:e2e (playwright test). Full suite: pnpm test.
+
+21.2 Playwright configuration (playwright.config.ts)
+----------------------------------------------------
+
+  - testDir ./tests, timeout 60 s, fullyParallel, CI: forbidOnly, 2
+    retries, 2 workers, github reporter.
+  - baseURL http://127.0.0.1:4300.
+  - webServer: `node scripts/serve.mjs 4300`, readiness URL must be an
+    EXISTING path (http://127.0.0.1:4300/examples/vanilla/) because a
+    404 root would fail the readiness check; reuseExistingServer locally.
+  - Projects: chromium (Desktop Chrome), firefox (Desktop Firefox),
+    webkit (Desktop Safari).
+
+21.3 Specs
+----------
+
+  - smoke.spec.ts: loads /examples/vanilla/, asserts h1 text, asserts
+    main.ts was served with application/javascript content-type, and
+    inspects the Cache Storage API: both rawscript-wasm-v1 (contains
+    esbuild.wasm) and rawscript-transpiled-v1 (contains main.ts) must
+    exist with the right keys. This is the closest thing to a SW unit
+    test — real browser integration beats mocks for fetch interception.
+  - jsx.spec.ts: loads the react example, captures SW-served module
+    bodies in a response handler, asserts the compiled output imports
+    react/jsx-runtime and react-dom/client. Second test: vanilla main.ts
+    must NOT contain jsx-runtime (plain ts is not JSX-transformed).
+  - examples.spec.ts: the 5 framework pages each render without page
+    errors, filtering ONLY the known transient MIME error.
+  - cli.spec.ts (serial, one port per worker: 4321 + workerIndex):
+    beforeAll builds the react example with the REAL bundled CLI into a
+    temp dir and spawns the CLI's own serve on it; then asserts the built
+    page renders with no rawscript script tag, and that the output HTML
+    contains the injected importmap with react/jsx-runtime while the
+    bundled App.js contains the automatic-JSX import. This is a full
+    build -> serve -> render round trip of the shipped artifact.
+
+21.4 Test-writing patterns worth knowing
+----------------------------------------
+
+  - Because boot's first-load reload races navigation, module bodies are
+    captured with page.on('response') handlers (filtered on content-type
+    application/javascript) rather than waitForResponse + text().
+  - The transient "not a valid JavaScript MIME type for module script"
+    pageerror (WebKit, first uncontrolled load) is filtered; anything
+    else is a real failure.
+  - Current totals: 22 unit + 30 e2e, all green on the dev machine
+    (chromium, firefox, webkit).
+
+
+================================================================================
+22. CI AND RELEASE AUTOMATION (GitHub Actions)
+================================================================================
+
+22.1 ci.yml — runs on push to main/develop and on pull requests:
+     checkout -> pnpm/action-setup@v4 (pnpm 9) -> setup-node@v4
+     (Node 20, pnpm cache) -> pnpm install --frozen-lockfile ->
+     typecheck -> build runtime -> build CLI ->
+     npx playwright install --with-deps chromium firefox webkit ->
+     pnpm test:unit -> pnpm test:e2e.
+
+22.2 publish.yml — runs on any v* tag push:
+     same verification chain (install, typecheck, both builds, browsers,
+     full pnpm test) and then:
+       1. npm publish --provenance --access public from packages/runtime
+          (publishes 'rawscript')
+       2. npm publish --provenance --access public from packages/cli
+          (publishes 'rawscript-cli')
+     Provenance requires the OIDC permission (id-token: write) and an
+     NPM_TOKEN secret for registry auth.
+
+     Release process: git tag v0.2.0 && git push origin v0.2.0.
+     Keep the version in sync in ALL THREE package.json files (root,
+     runtime, cli).
+
+
+================================================================================
+23. BROWSER SUPPORT
+================================================================================
+
+  Browser          Minimum   Reason / notes
+  ---------------- --------- -------------------------------------------
+  Chrome / Edge    89        import maps, ES modules, module SW
+  Firefox          114       module-type Service Workers
+  Safari           16.4      import maps + module SW
+  IE               n/a       not supported
+
+Requirements: module-type Service Workers, ES modules, import maps,
+BroadcastChannel, fetch. The project is tested continuously on the three
+Playwright browsers above.
+
+Firefox's floor is 114 because it was the first Firefox to ship
+module-type service workers; Safari 16.4 shipped import maps.
+
+
+================================================================================
+24. PERFORMANCE CHARACTERISTICS
+================================================================================
+
+  - First load: ~2-4 s — downloads ~8 MB WASM, compiles it, shows the
+    loading indicator, then the activation reload. One-time cost per
+    origin/browser.
+  - Subsequent loads: <100 ms — WASM served from the SW cache
+    (WebAssembly.Module from cached bytes) and compiled output served
+    from the transpiled cache without recompiling.
+  - Transpilation: ~5-50 ms per file (esbuild is fast even in WASM).
+  - Production CLI build: esbuild Node API (native binary), full speed.
+  - HMR: one HEAD request per module per second in dev (1000 ms default).
+
+Measured bundle sizes (uncompressed): rawscript.js ~31 KB,
+rawscript-sw.js ~9 KB. The runtime is 0 KB of npm dependencies.
+
+
+================================================================================
+25. DESIGN INVARIANTS AND RULES
+================================================================================
+
+These are hard rules that must never be broken:
+
+  1. packages/runtime/package.json "dependencies" must remain {}.
+     The runtime is static files; it cannot impose an install step.
+     (A change that adds a runtime dependency is rejected regardless of
+     how useful the feature is.)
+
+  2. resolver.ts is intentionally regex-based, not AST. Extend it, add
+     unit tests — but never replace it with a parser without revisiting
+     the decision.
+
+  3. esbuild-wasm is pinned to 0.20.2 in transpiler.ts AND sw.ts; both
+     must match. Bump the cache name rawscript-wasm-vN when bumping.
+
+  4. Cache names are versioned (rawscript-wasm-v1,
+     rawscript-transpiled-v1); the SW purges stale rawscript-* caches on
+     activate.
+
+  5. A transpile failure must NEVER become an opaque network error —
+     the SW returns a throwing module + posts TRANSPILE_ERROR so the
+     overlay can render.
+
+  6. The JSX policy (importmap-derived, automatic) must stay identical
+     between the SW and the CLI bundler, or dev and production builds
+     would diverge.
+
+  7. All file serving (both servers) must be traversal-safe: decode
+     URLs, strip query strings, and verify the resolved path stays under
+     the root.
+
+  8. The CLI's dist/cli.mjs must keep 'commander' and 'esbuild' external
+     (bundling CJS commander into ESM breaks with a dynamic-require
+     error).
+
+  9. Version alignment: runtime, cli, and root versions always move in
+     lockstep (currently 0.2.0).
+
+ 10. The debug panel shortcut is Ctrl/Cmd+Shift+\ — Ctrl+Shift+R is
+     reserved by browsers and must not be hijacked.
+
+
+================================================================================
+26. KNOWN LIMITATIONS AND TRADEOFFS
+================================================================================
+
+  - npm dependencies always load from esm.sh at runtime — production
+    output requires network access to esm.sh, and there is no tree-
+    shaking or code-splitting of dependencies (each import is a separate
+    module fetch).
+  - Offline support is not possible with npm dependencies (CDN-backed).
+  - The regex rewriter cannot handle every conceivable JS construct
+    (section 7.3).
+  - .vue single-file components are not supported.
+  - Hot reload is page-reload-based (not state-preserving HMR), and only
+    tracks files listed as module scripts in the DOM (not files imported
+    indirectly by those scripts).
+  - First load pays the WASM download/compile cost and one extra reload.
+  - The fallback mode (file:// / sandboxed iframes) recompiles on every
+    load and has no change detection.
+  - Firefox 114+/Safari 16.4+ floor excludes older-but-common browsers.
+  - rawscript is not a replacement for a real build setup for large
+    production apps: use it for prototypes, teaching, demos, docs
+    embeds, and single-page tools — use the CLI (or a full toolchain)
+    when you need reproducible, auditable, offline-capable production
+    builds.
+
+Performance table (from README):
+  - First load: ~2-4 s (WASM init, shown by the loader)
+  - Subsequent loads: <100 ms (cached WASM + cached output)
+  - Transpile: ~5-50 ms/file
+  - CLI build: full native esbuild speed
+
+
+================================================================================
+27. DEVELOPMENT WORKFLOW (COMMANDS)
+================================================================================
+
+Prerequisites: Node.js >= 18 (>= 20 recommended), pnpm 9, and once:
+  npx playwright install chromium firefox webkit
+
+  pnpm install          install all workspace deps
+  pnpm build            build the runtime (dist/ + root copies)
+  pnpm --filter rawscript-cli build
+                        build the CLI
+  pnpm typecheck        tsc --noEmit across all packages
+  pnpm serve            dev server on :3000 serving the repo root
+  pnpm test:unit        resolver unit tests (node:test)
+  pnpm test:e2e         full Playwright suite (3 browsers)
+  pnpm test             unit + e2e
+  pnpm dev              rebuild the runtime on changes (--watch)
+
+Try it:
+  pnpm serve
+  open http://localhost:3000/examples/react/
+
+Edit packages/runtime/src/*, re-run pnpm build, reload the page. The
+runtime's own HMR watches the EXAMPLE .ts files, not the runtime sources
+themselves — there is no runtime-source hot path.
+
+Adding a runtime module: create src/yourmodule.ts, import it from sw.ts
+or boot.ts, run pnpm build (esbuild picks it up), never touch
+"dependencies".
+
+
+================================================================================
+28. VERSIONING AND RELEASE CHECKLIST
+================================================================================
+
+Current version: 0.2.0 (runtime + cli + root in lockstep).
+
+When preparing a release:
+  1. Update the version in package.json, packages/runtime/package.json,
+     packages/cli/package.json (identical value).
+  2. Update the version string in packages/cli/src/index.ts
+     (program.version(...)) — easy to forget.
+  3. If esbuild-wasm changed: update transpiler.ts + sw.ts, and bump
+     rawscript-wasm-vN (transpiled cache name too if output format
+     changed).
+  4. Run pnpm install (lockfile sync), pnpm build, pnpm --filter
+     rawscript-cli build, pnpm typecheck, pnpm test.
+  5. Commit; tag v0.2.0; push the tag. publish.yml runs the same checks
+     and publishes both packages with provenance.
+
+Bumping esbuild-wasm (reference):
+  - packages/runtime/src/transpiler.ts  wasmURL
+  - packages/runtime/src/sw.ts          browser shim import
+  Both at https://unpkg.com/esbuild-wasm@<VERSION>/...
+
+
+================================================================================
+29. PROJECT METADATA
+================================================================================
+
+  Repositories:  git remote origin https://github.com/rawscript-dev/rawscript.git
+  Branch:        feat/v0.2.0-import-rewriting
+  Packages:      rawscript (runtime, on npm), rawscript-cli (CLI, on npm)
+  License:       MIT (LICENSE file; runtime + cli package.json)
+  Package manager: pnpm 9 (workspace packages/*)
+  Node floor:    engines node >=18 (CLI)
+  Runtime deps:  rawscript -> {} (zero)
+  CLI deps:      esbuild ^0.20.2, commander ^11.0.0
+  Dev deps:      esbuild ^0.20.2, typescript ^5.4.0, @playwright/test
+                 ^1.49.0 (resolved 1.62.1), @types/node ^20.0.0
+  CDNs in use:   unpkg.com (esbuild-wasm, runtime CDN installs),
+                 esm.sh (npm package resolution)
+  Test state:    22 unit + 30 e2e green (chromium/firefox/webkit)
+
+
+================================================================================
+30. GLOSSARY
+================================================================================
+
+  Boot script tag     The <script src="...rawscript..."> tag; source of
+                      all data-* configuration.
+  Cache-first         Serve from the SW cache if present, else fetch.
+  CACHE_BUST          SW message: delete transpiled cache entry(ies).
+  CACHE_BUSTED        SW reply (via MessagePort) confirming deletion.
+  esm.sh              CDN that converts npm packages to ESM with correct
+                      import paths. https://esm.sh/<pkg>[@version][/subpath].
+  esbuild-wasm        esbuild compiled to WebAssembly for browsers.
+  HMR                 Hot Module Replacement — here: poll + reload.
+  IMPORTMAP           SW message: the page's import map (mapped specifiers
+                      are never rewritten).
+  Import map          Browser <script type="importmap"> mapping bare
+                      specifiers to URLs.
+  Loader              The first-load "Rawscript is loading…" overlay.
+  Module-type SW      Service Worker registered with { type: 'module' }
+                      (allows ES module imports inside the SW).
+  Raw script          A .ts/.tsx file as stored on disk (not compiled).
+  TRANSPILE_ERROR     SW -> page message carrying a compilation failure.
+  Transpiled cache    rawscript-transpiled-v1: compiled module output.
+  WASM cache          rawscript-wasm-v1: the esbuild.wasm binary.
+  wasmModule          esbuild-wasm init option taking a compiled
+                      WebAssembly.Module (used for cache init).
+  Worker scope        The URL prefix a SW controls (its location).
+
+
+================================================================================
+END OF GUIDE
+================================================================================
+
+For anything not covered here: the README.md, CONTRIBUTING.md, and the
+source files themselves are the source of truth — every module in
+packages/runtime/src and packages/cli/src carries a doc comment
+explaining its purpose, and every non-trivial behavior described above is
+covered by an automated test.

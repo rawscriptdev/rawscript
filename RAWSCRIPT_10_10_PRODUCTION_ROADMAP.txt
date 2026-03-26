@@ -1,0 +1,1425 @@
+RAWSCRIPT — PRODUCTION & REAL-WORLD ADOPTION ROADMAP
+
+Target: Move Rawscript from an impressive v0.2 developer-tool project to
+a real, trustworthy, production-usable open-source tool.
+
+IMPORTANT
+
+This is a target-state engineering plan, not a promise that any software
+can literally be “10/10 from every angle.” The goal is to remove the
+project’s current material weaknesses, make behavior predictable,
+secure, reproducible, offline-capable, observable, documented, and
+useful to real developers.
+
+BASELINE
+
+The current Rawscript design is a browser-first TypeScript runtime. A
+module Service Worker intercepts .ts/.tsx requests, esbuild-WASM
+transpiles them in the browser, bare imports are rewritten toward
+esm.sh, compiled modules are cached, and a CLI uses native esbuild for
+production builds. The runtime has zero npm runtime dependencies, 22
+resolver unit tests, and 30 Playwright E2E tests across Chromium,
+Firefox and WebKit.
+
+The current guide also explicitly identifies important limitations: -
+runtime npm dependencies ultimately load through public CDNs; - offline
+npm-dependency support is not available; - the import rewriter is
+regex-based and has edge cases; - HMR is polling + page reload rather
+than state-preserving HMR; - first load pays the WASM download/compile
+cost; - fallback mode recompiles on every load; - the browser support
+floor is modern-only; - the CLI still externalizes npm packages to
+esm.sh; - Rawscript is currently intended for prototypes, teaching,
+demos, docs embeds and small tools rather than replacing a mature
+production build system.
+
+The following roadmap is specifically designed around those weaknesses.
+
+==================================================== PART 0 — DEFINE
+WHAT “10/10” MEANS ====================================================
+
+Do NOT try to make Rawscript “everything.”
+
+A 10/10 product needs a sharp promise:
+
+“Rawscript is a browser-first TypeScript runtime and build tool for
+projects that want zero-config development without giving up
+reproducible production builds.”
+
+It should have TWO clearly separated products:
+
+A. Rawscript Dev Runtime - zero-config - browser-side TypeScript/TSX -
+Service Worker based - optional CDN mode - optional fully self-hosted
+mode - excellent diagnostics - fast repeat loads - safe cache
+invalidation
+
+B. Rawscript Build CLI - deterministic production builds - no Rawscript
+runtime required in output - fully local dependency resolution -
+lockfile support - content-hashed assets - tree shaking - code
+splitting - source maps - CSS/assets - environment handling -
+reproducible builds - security controls - CI-friendly output
+
+DO NOT market it as “Vite replacement” until benchmarks, compatibility,
+ecosystem support, documentation, and adoption justify that claim.
+
+==================================================== PHASE 1 — FIX THE
+FUNDAMENTAL CDN DEPENDENCY PROBLEM
+====================================================
+
+CURRENT PROBLEM
+
+The current runtime downloads esbuild-WASM from unpkg and resolves npm
+packages through esm.sh. The current CLI also injects esm.sh URLs for
+externalized npm imports.
+
+This creates several production problems: - no true offline operation; -
+dependency availability depends on third parties; - CDN outages can
+affect builds/apps; - package content can change independently of the
+application; - enterprises may prohibit third-party runtime CDNs; -
+supply-chain policy becomes harder; - reproducibility is weaker; - CSP
+and network policy become harder; - private packages cannot simply be
+resolved this way.
+
+GOAL
+
+Make external CDN usage OPTIONAL, not required.
+
+Three supported dependency modes:
+
+1.  CDN MODE Fastest onboarding: react -> https://esm.sh/react
+
+2.  SELF-HOSTED MODE Rawscript downloads/packages are hosted on the
+    user’s own origin: react -> /_rawscript/npm/react@19.x/index.js
+
+3.  LOCKED/BUNDLED MODE Production CLI resolves dependencies locally and
+    bundles them or emits deterministic local assets.
+
+Never make users depend on esm.sh to run a serious production build.
+
+  -----------------------------------------
+  1.1 SELF-HOST THE ESBUILD-WASM ARTIFACT
+  -----------------------------------------
+
+Do not hard-code: https://unpkg.com/esbuild-wasm@VERSION/…
+
+Instead:
+
+-   ship the exact esbuild-WASM artifact as part of the Rawscript
+    distribution or provide a separately downloadable official artifact;
+-   record its exact version;
+-   record SHA-256/SRI integrity;
+-   allow data-wasm-url or config to override the location;
+-   default to a same-origin URL in self-hosted mode;
+-   optionally support CDN mode as an explicit convenience mode.
+
+Example conceptual configuration:
+
+rawscript.config.ts
+
+runtime: wasm: source: “self” url: “/_rawscript/esbuild.wasm” sha256:
+“…”
+
+Never silently fall back from self-hosted mode to an arbitrary
+third-party CDN. If the user selected offline/self-hosted mode, fail
+clearly.
+
+  -----------------------------------------------------
+  1.2 CREATE AN OFFICIAL RAWscript ASSET DISTRIBUTION
+  -----------------------------------------------------
+
+Provide:
+
+@rawscript/runtime @rawscript/cli @rawscript/wasm @rawscript/registry
+(if needed later)
+
+The exact package names can differ, but the separation should be clear.
+
+The runtime package should contain or reference a versioned WASM
+artifact.
+
+Every release should publish: - npm package - tarball - checksums -
+release notes - SBOM - provenance - source archive
+
+  ---------------------------------
+  1.3 BUILD A LOCAL PACKAGE CACHE
+  ---------------------------------
+
+Create a Rawscript package cache.
+
+Concept:
+
+rawscript install | v package registry | v local cache | v Rawscript dev
+runtime
+
+The cache should store: - package name - exact version - resolved URL -
+integrity hash - package metadata - ESM entry - subpath mappings -
+dependency graph
+
+The browser should be able to load from the local origin instead of
+esm.sh.
+
+For example:
+
+import React from “react”
+
+could resolve to:
+
+/_rawscript/packages/react/19.1.0/index.js
+
+rather than:
+
+https://esm.sh/react
+
+  -------------------
+  1.4 ADD LOCKFILES
+  -------------------
+
+Introduce a lockfile, e.g.:
+
+rawscript.lock
+
+It must capture: - exact package versions - resolved URLs/registry
+source - integrity hashes - dependency graph - peer dependency
+decisions - package format - export condition selected
+
+A developer should be able to run:
+
+rawscript install rawscript build –frozen-lockfile
+
+If the lockfile and package graph disagree, CI must fail.
+
+This is essential for reproducibility.
+
+  ------------------------------------------
+  1.5 SUPPORT REAL NPM REGISTRY RESOLUTION
+  ------------------------------------------
+
+Do not pretend esm.sh is equivalent to npm.
+
+Implement a registry-aware resolver for the CLI.
+
+At minimum support: - package.json - exports - imports - main - module -
+browser - types - conditional exports - subpath exports - scoped
+packages - exact versions - semver ranges - peer dependencies
+
+Use npm-compatible registry metadata rather than inventing a proprietary
+package semantics.
+
+The CLI should resolve dependencies locally.
+
+  ------------------------
+  1.6 PRIVATE REGISTRIES
+  ------------------------
+
+Real companies use: - npm private registries - GitHub Packages -
+Artifactory - Verdaccio - Azure Artifacts - other compatible registries
+
+Add:
+
+rawscript.config.ts
+
+registry: default: “https://registry.npmjs.org” scopes: “@company”:
+“https://npm.company.com”
+
+Credentials must NEVER be stored in the lockfile or browser runtime.
+
+==================================================== PHASE 2 — MAKE
+PRODUCTION BUILDS ACTUALLY PRODUCTION-GRADE
+====================================================
+
+The current CLI is useful but should evolve from: “bundle TS files”
+
+into: “reproducible web build system.”
+
+  -------------------------------
+  2.1 LOCAL DEPENDENCY BUNDLING
+  -------------------------------
+
+Default production behavior should be:
+
+npm dependency | v local resolution | v esbuild | v bundled output
+
+Do not leave production npm imports pointing at esm.sh by default.
+
+Provide explicit modes:
+
+rawscript build –bundle rawscript build –external rawscript build –cdn
+
+Default should be the safest/reproducible mode.
+
+  ------------------
+  2.2 TREE SHAKING
+  ------------------
+
+Ensure unused exports are removed.
+
+Add tests such as:
+
+import { used } from “large-package”
+
+Output must not contain unused code when the package supports tree
+shaking.
+
+Measure bundle size before/after.
+
+  --------------------
+  2.3 CODE SPLITTING
+  --------------------
+
+Support:
+
+import(“./heavy-module”)
+
+as a real split chunk.
+
+Output:
+
+dist/ index.js chunk-A.js chunk-B.js
+
+Do not force every application into one huge JS file.
+
+  ---------------------
+  2.4 CONTENT HASHING
+  ---------------------
+
+Use:
+
+app.8f31a2.js vendor.4a12c9.js styles.91d22e.css
+
+This enables long-term caching.
+
+Generate an asset manifest:
+
+dist/manifest.json
+
+  -----------------
+  2.5 CSS SUPPORT
+  -----------------
+
+A real web build tool cannot be JavaScript-only forever.
+
+At minimum: - CSS imports - CSS output - minification - source maps
+
+Then evaluate: - CSS modules - PostCSS compatibility - preprocessors
+only if demand justifies them
+
+Do not implement everything at once.
+
+  -------------------
+  2.6 ASSET IMPORTS
+  -------------------
+
+Support common patterns:
+
+import logo from “./logo.svg” import image from “./image.png” import
+data from “./data.json”
+
+Define clear behavior for: - SVG - PNG/JPEG/WebP - JSON - fonts - WASM
+
+Use asset hashing and copied files where appropriate.
+
+  ---------------------------
+  2.7 ENVIRONMENT VARIABLES
+  ---------------------------
+
+Support an explicit model such as:
+
+RAW_SCRIPT_ENV=production
+
+Do NOT expose arbitrary server secrets to browser code.
+
+Document: - public variables - build-time variables - server-only
+variables (if ever supported)
+
+Only variables with an explicit public prefix should reach client
+bundles.
+
+  -----------------
+  2.8 SOURCE MAPS
+  -----------------
+
+Production builds should support:
+
+–sourcemap –sourcemap=external –sourcemap=inline –sourcemap=hidden
+
+Default for production should generally be external or hidden rather
+than huge inline maps.
+
+Ensure stack traces point back to original TS/TSX.
+
+==================================================== PHASE 3 — REPLACE
+THE REGEX IMPORT REWRITER WITH A REAL MODULE GRAPH
+====================================================
+
+CURRENT STATE
+
+The current resolver is intentionally regex-based and has documented
+exotic edge cases.
+
+That was acceptable for a zero-dependency prototype.
+
+For a serious build tool, the CLI should stop depending on regex
+rewriting.
+
+TARGET
+
+Create a proper resolver pipeline:
+
+source | v parse module | v extract imports | v resolve specifiers | v
+construct module graph | v transform | v bundle/split
+
+Use an actual parser only where necessary. Do not blindly add a huge
+parser to the tiny browser runtime.
+
+A good architecture is:
+
+Browser runtime: - remain extremely small - use browser-native import
+maps where possible - only perform minimal transformation
+
+CLI: - full resolver - full module graph - robust parsing - package
+exports support
+
+This preserves the zero-dependency runtime philosophy without
+sacrificing production correctness.
+
+==================================================== PHASE 4 — MAKE
+IMPORT MAPS A FIRST-CLASS FEATURE
+====================================================
+
+The current project already uses import maps.
+
+Take this much further.
+
+Support: - imports - scopes - prefix mappings - user overrides -
+generated maps - local package maps - integrity metadata where
+appropriate
+
+Do not rewrite imports unnecessarily when the browser can resolve them
+through an import map.
+
+Preferred flow:
+
+source: import React from “react”
+
+import map: “react”: “/_rawscript/packages/react/19.1.0/index.js”
+
+browser resolves it natively.
+
+This reduces custom parsing and improves standards alignment.
+
+Also document the distinction:
+
+Import map = browser resolution Bundler = production graph
+transformation
+
+==================================================== PHASE 5 — SECURITY
+HARDENING ====================================================
+
+This phase is mandatory before claiming serious adoption.
+
+  ---------------------------
+  5.1 SUPPLY-CHAIN SECURITY
+  ---------------------------
+
+For every dependency: - lock exact version - store integrity - generate
+dependency graph - audit dependencies - detect unexpected registry
+changes - produce SBOM
+
+Support: - npm audit / equivalent - OSV scanning - Dependabot/Renovate -
+lockfile review
+
+  -----------------------
+  5.2 PACKAGE INTEGRITY
+  -----------------------
+
+Downloaded packages must be verified.
+
+The cache should reject: - checksum mismatch - unexpected content -
+malformed metadata
+
+For browser-hosted modules, use standards-supported integrity mechanisms
+where practical.
+
+  -----------------------
+  5.3 CSP COMPATIBILITY
+  -----------------------
+
+Document and test strict Content Security Policies.
+
+The project should work with a reasonable CSP such as:
+
+default-src ‘self’; script-src ‘self’; worker-src ‘self’; connect-src
+‘self’;
+
+If a feature requires unsafe-eval, blob:, or external CDN access,
+document exactly why.
+
+Create: - CSP-compatible self-hosted mode - CDN mode with clearly
+documented CSP requirements
+
+  ---------------------------
+  5.4 SERVICE WORKER SAFETY
+  ---------------------------
+
+Service Workers are powerful because they intercept requests.
+
+Never allow arbitrary scope expansion.
+
+Validate: - service worker URL - scope - origin - configuration -
+requested paths
+
+Do not let an untrusted configuration control unrelated application
+paths.
+
+  --------------------
+  5.5 PATH TRAVERSAL
+  --------------------
+
+Keep the existing traversal protections and expand them.
+
+Test: - ../ - encoded ../ - double encoding - backslashes on Windows -
+null bytes - mixed separators - URL encoded separators - absolute
+paths - symlink escapes
+
+Use platform-safe path normalization.
+
+  ----------------------
+  5.6 SECURITY HEADERS
+  ----------------------
+
+The CLI server should support: - Content-Security-Policy -
+X-Content-Type-Options - Referrer-Policy - Permissions-Policy
+
+Do not force production users into unsafe defaults.
+
+  --------------------------
+  5.7 DEPENDENCY CONFUSION
+  --------------------------
+
+Make package resolution deterministic.
+
+Explicitly handle scoped packages and registry precedence.
+
+Example:
+
+@company/ui
+
+must never accidentally resolve from the public registry if the
+configured scope points to a private registry.
+
+  -------------------------------
+  5.8 MALICIOUS PACKAGE WARNING
+  -------------------------------
+
+Rawscript is executing JavaScript.
+
+Make it clear: “Installing a package gives that package the normal
+privileges of code running in your application.”
+
+Do not advertise sandboxing unless it is actually sandboxed.
+
+==================================================== PHASE 6 —
+OFFLINE-FIRST / AIR-GAPPED MODE
+====================================================
+
+This is one of the biggest upgrades.
+
+Target:
+
+rawscript build –offline
+
+must work after dependencies are available locally.
+
+Also:
+
+rawscript dev –offline
+
+should work from a local package cache.
+
+For enterprise:
+
+rawscript install –offline rawscript build –offline –frozen-lockfile
+
+should be deterministic.
+
+Create a cache command:
+
+rawscript cache export ./rawscript-cache.tar
+
+and:
+
+rawscript cache import ./rawscript-cache.tar
+
+This makes Rawscript viable for: - classrooms - airplanes - restricted
+networks - enterprise environments - CI without internet - secure build
+environments
+
+==================================================== PHASE 7 — BETTER
+DEV EXPERIENCE ====================================================
+
+The current polling-based reload system is intentionally simple.
+
+Keep it as a fallback, but add a proper development server protocol.
+
+  -------------------------
+  7.1 OPTIONAL DEV SERVER
+  -------------------------
+
+Introduce:
+
+rawscript dev
+
+Architecture:
+
+Browser | WebSocket | Rawscript dev server | file watcher
+
+The server sends: - file changed - full reload - module update - error -
+server restart
+
+  --------------
+  7.2 REAL HMR
+  --------------
+
+Eventually support module-level updates.
+
+Example:
+
+Edit Button.tsx | v Server detects change | v Browser receives update |
+v Only Button module replaced
+
+Do NOT promise React state preservation until it is actually implemented
+and tested.
+
+Provide: - full reload fallback - module reload - framework-specific HMR
+adapters later
+
+  -------------------------
+  7.3 FILE GRAPH WATCHING
+  -------------------------
+
+The current implementation primarily watches module script entries.
+
+Upgrade to watch the complete dependency graph.
+
+If:
+
+App.tsx -> components/Button.tsx -> styles.css
+
+changes, Rawscript should know which application modules are affected.
+
+==================================================== PHASE 8 — BROWSER
+SUPPORT AND FALLBACK STRATEGY
+====================================================
+
+Define supported browsers from actual automated testing, not guesses.
+
+Maintain a compatibility matrix:
+
+Chrome Edge Firefox Safari iOS Safari Android Chrome
+
+Test: - Service Worker - module Service Worker - import maps - WASM -
+BroadcastChannel - Blob fallback - cache APIs - dynamic import - source
+maps
+
+Important: Service Workers require secure contexts in normal use, with
+localhost treated specially for development. Make HTTPS a first-class
+documented requirement.
+
+Do NOT say “works everywhere.”
+
+Say: “Supported browsers: X, Y, Z. Degraded fallback: A. Unsupported:
+B.”
+
+==================================================== PHASE 9 — REMOVE
+THE FIRST-LOAD EXPERIENCE PROBLEM
+====================================================
+
+Current first load pays roughly 2–4 seconds because the WASM compiler is
+large.
+
+Do not accept that as the final UX.
+
+Options:
+
+1.  Smaller/lighter compiler artifact if technically possible.
+2.  Stream/preload the compiler.
+3.  Compile WASM during idle time.
+4.  Cache aggressively.
+5.  Use browser cache + Cache Storage intelligently.
+6.  Avoid unnecessary reloads.
+7.  Detect controlled/uncontrolled state earlier.
+8.  Show accurate progress instead of a generic loader.
+9.  Lazy-load compiler only when a TS/TSX module is actually requested.
+
+Ideal flow:
+
+HTML loads | Rawscript boot < 20ms | Browser starts app | Only when TS
+is requested: | Compiler initialization | cached WASM | compile
+
+Measure this rather than guessing.
+
+Create performance budgets: - runtime JS <= X KB - service worker <= X
+KB - first boot <= X ms excluding unavoidable WASM download - cached
+compile <= X ms - memory <= X MB for defined fixture
+
+Do not choose arbitrary targets; benchmark on low-end hardware too.
+
+==================================================== PHASE 10 — MEMORY
+AND CACHE MANAGEMENT
+====================================================
+
+A cache that grows forever is not production-grade.
+
+Implement: - maximum cache size - maximum module count - LRU eviction -
+cache metadata - versioned cache migrations - stale entry cleanup -
+manual clear command/API - automatic recovery from corrupt cache
+
+Cache keys must include enough information to prevent stale output when
+any of these change: - source URL - source version/hash - compiler
+version - JSX configuration - relevant Rawscript version -
+transformation options
+
+Do NOT rely only on URL if the compiled result can change while the URL
+stays the same.
+
+This is one of the most important correctness upgrades.
+
+==================================================== PHASE 11 —
+DETERMINISTIC BUILDS
+====================================================
+
+A serious production build must be reproducible.
+
+Two machines with: - same source - same lockfile - same Rawscript
+version - same compiler version
+
+should produce equivalent output.
+
+Implement: - lockfile - pinned compiler - pinned plugin versions -
+deterministic asset names - stable ordering - reproducible metadata -
+controlled timestamps - build manifest - build ID
+
+Provide:
+
+rawscript build –frozen-lockfile
+
+CI should use this.
+
+Create a test:
+
+Build machine A Build machine B
+
+Compare output hashes.
+
+==================================================== PHASE 12 — BUILD
+MANIFEST AND ANALYSIS
+====================================================
+
+Generate:
+
+dist/rawscript-manifest.json
+
+Example fields:
+
+{ “version”: “…”, “entrypoints”: […], “assets”: […], “chunks”: […],
+“dependencies”: […], “buildHash”: “…”, “compilerVersion”: “…”,
+“timestampPolicy”: “deterministic” }
+
+Also expose:
+
+rawscript analyze
+
+Output: - total JS - CSS - assets - largest dependencies - duplicated
+modules - number of chunks - gzip/brotli sizes - dependency graph
+
+This turns Rawscript into a useful production tool rather than just a
+transpiler.
+
+==================================================== PHASE 13 — ERROR
+HANDLING AND DX ====================================================
+
+Keep the existing error overlay, but make it excellent.
+
+Errors should include: - exact file - line - column - source frame -
+error category - likely cause - import chain - dependency that caused
+failure - browser/runtime context
+
+Example:
+
+ERROR TSX-TRANSFORM App.tsx:31:14
+
+Failed to resolve: react/jsx-runtime
+
+Import chain: index.html -> App.tsx -> react/jsx-runtime
+
+Possible fixes: 1. Run rawscript install 2. Check importmap 3. Check
+package version 4. Check registry connectivity
+
+Do not show generic: “Failed to transpile.”
+
+==================================================== PHASE 14 — LOGGING
+AND OBSERVABILITY ====================================================
+
+Add structured logging.
+
+Levels: - silent - error - warn - info - debug - trace
+
+CLI:
+
+rawscript build –log-level debug
+
+Browser:
+
+data-log-level=“debug”
+
+Never log: - credentials - auth tokens - private registry passwords -
+sensitive environment variables
+
+Add machine-readable JSON logs for CI.
+
+==================================================== PHASE 15 — PLUGINS,
+BUT ONLY AFTER THE CORE IS STABLE
+====================================================
+
+Do NOT build a plugin ecosystem too early.
+
+First define stable internal interfaces:
+
+Resolver Transformer Loader Asset handler Output plugin Dev-server hook
+
+Then allow plugins such as:
+
+@rawscript/plugin-tailwind @rawscript/plugin-sass @rawscript/plugin-wasm
+@rawscript/plugin-mdx
+
+Every plugin must declare: - version - capabilities - compatibility -
+dependencies
+
+Avoid a plugin API that exposes unstable internals.
+
+==================================================== PHASE 16 —
+FRAMEWORK SUPPORT ====================================================
+
+Current examples: - Vanilla - React - Preact - Solid - Vue - Three.js
+
+Keep these as compatibility fixtures.
+
+Add real compatibility tests for: - React - Preact - Solid - Vue -
+Svelte if supported - common libraries - dynamic imports - CSS - JSON -
+WASM
+
+Do not claim framework support because one hello-world example renders.
+
+Define support tiers:
+
+Tier 1: Fully tested and supported.
+
+Tier 2: Works but limited.
+
+Tier 3: Community/example only.
+
+==================================================== PHASE 17 — CLI
+QUALITY ====================================================
+
+The CLI should feel like a professional tool.
+
+Commands:
+
+rawscript init rawscript dev rawscript install rawscript add rawscript
+remove rawscript build rawscript preview rawscript serve rawscript clean
+rawscript cache rawscript analyze rawscript doctor rawscript info
+
+“rawscript doctor” should detect: - unsupported Node version - invalid
+lockfile - missing package - registry problems - broken cache -
+incompatible browser - Service Worker scope problems - invalid config
+
+==================================================== PHASE 18 —
+CONFIGURATION SYSTEM
+====================================================
+
+Zero-config remains the default.
+
+But advanced users need:
+
+rawscript.config.ts
+
+Example conceptual shape:
+
+export default { root: “.”, entry: “./index.html”,
+
+build: { outDir: “./dist”, target: “es2022”, sourcemap: true, minify:
+true, splitting: true },
+
+resolve: { registry: “…”, aliases: {} },
+
+runtime: { mode: “self-hosted”, wasmUrl: “/_rawscript/esbuild.wasm” },
+
+dev: { port: 3000, hmr: true } }
+
+Do not require this file for normal users.
+
+==================================================== PHASE 19 —
+DOCUMENTATION THAT REAL DEVELOPERS CAN ACTUALLY USE
+====================================================
+
+Documentation must have five layers.
+
+1.  30-second quickstart
+2.  5-minute tutorial
+3.  migration guide
+4.  reference documentation
+5.  architecture documentation
+
+Create pages:
+
+Getting Started Why Rawscript How It Works Development Production Builds
+Dependencies Offline Mode Self Hosting Import Maps Configuration CLI
+Reference Browser Support Security Troubleshooting Performance Migration
+from Vite Migration from webpack CI/CD Monorepo usage Private Registries
+Plugin Development Contributing Architecture
+
+The README should not be 2000 lines.
+
+Keep README concise and link to docs.
+
+==================================================== PHASE 20 —
+MIGRATION FROM VITE / OTHER TOOLS
+====================================================
+
+For real adoption, give developers a migration story.
+
+Document:
+
+Existing Vite project | v rawscript init | v generate config | v run
+compatibility checks | v fix unsupported features | v Rawscript
+
+Do NOT claim 100% compatibility.
+
+Create a compatibility table:
+
+Feature Status TS/TSX Supported ESM Supported Dynamic import Supported
+CSS Supported JSON Supported Code splitting Supported Env vars Supported
+Aliases Supported Plugins Depends SSR Planned/unsupported Vue SFC
+Planned/unsupported etc.
+
+Honesty increases adoption.
+
+==================================================== PHASE 21 —
+REAL-WORLD SECURITY TESTING
+====================================================
+
+Add dedicated security tests.
+
+Test: - malicious package names - path traversal - encoded traversal -
+cache poisoning - import-map injection - origin confusion -
+service-worker scope abuse - malformed package.json - malicious
+exports - enormous dependency graphs - cyclic imports - infinite dynamic
+imports - malformed source maps - invalid UTF-8 - huge source files -
+zip bombs if package archives are downloaded - symlink escapes in CLI -
+Windows path edge cases
+
+Also add fuzzing for: - module specifiers - resolver - package.json -
+import maps
+
+Run fuzzing in scheduled CI.
+
+==================================================== PHASE 22 — RESOURCE
+LIMITS / DOS RESISTANCE
+====================================================
+
+Because Rawscript can compile code, it needs limits.
+
+Define configurable limits for: - source file size - total dependency
+graph size - number of modules - compilation time - cache size - package
+archive size
+
+Fail gracefully.
+
+Example:
+
+“Compilation aborted: module graph exceeded 5,000 modules.”
+
+Do not allow a malformed project to freeze a browser indefinitely.
+
+==================================================== PHASE 23 —
+ACCESSIBILITY AND UX
+====================================================
+
+The loader, error overlay and debug panel should be accessible.
+
+Requirements: - keyboard navigation - focus management - screen-reader
+labels - sufficient contrast - reduced motion support - no inaccessible
+keyboard traps - clear error text
+
+This matters because developer tooling is still user-facing software.
+
+==================================================== PHASE 24 — RELEASE
+ENGINEERING ====================================================
+
+Move from manual release assumptions to disciplined release automation.
+
+Use: - semantic versioning - conventional commits if desired - changelog
+generation - release notes - automated canary releases - npm
+provenance - OIDC trusted publishing - 2FA / package protection -
+protected release tags - GitHub environment approvals
+
+Current npm documentation recommends trusted publishing with OIDC
+instead of long-lived automation tokens, and provenance can provide a
+verifiable link between published packages and their source/build
+process.
+
+Never keep an NPM_TOKEN permanently available if trusted publishing can
+be used.
+
+Release pipeline:
+
+PR | checks | merge | release PR | tag | build | test | security scan |
+SBOM | publish | provenance | GitHub Release
+
+==================================================== PHASE 25 — SBOM /
+SUPPLY CHAIN ====================================================
+
+Every release should produce an SBOM.
+
+Include: - direct dependencies - transitive dependencies - versions -
+licenses - hashes where possible
+
+Run: - dependency audit - license check - vulnerability scan - secret
+scan - SAST - lockfile validation
+
+Fail releases on critical security issues unless explicitly overridden.
+
+==================================================== PHASE 26 — LEGAL /
+LICENSING ====================================================
+
+Current project uses MIT.
+
+Keep it if that is the deliberate choice.
+
+Add: - LICENSE - NOTICE if needed - third-party notices - dependency
+license inventory - contribution policy - security policy - code of
+conduct - trademark policy if project becomes public-facing
+
+Do not accidentally redistribute third-party artifacts without checking
+their licenses.
+
+==================================================== PHASE 27 —
+PERFORMANCE BENCHMARKING
+====================================================
+
+Create a benchmark suite.
+
+Fixtures:
+
+1.  vanilla tiny app
+2.  React small app
+3.  React medium app
+4.  large dependency graph
+5.  Three.js app
+6.  1000-module synthetic project
+7.  cold browser
+8.  warm browser
+9.  low-end CPU
+10. mobile browser
+
+Measure:
+
+-   first boot
+-   WASM initialization
+-   first transpilation
+-   cached transpilation
+-   total network bytes
+-   memory
+-   CPU time
+-   production build time
+-   bundle size
+-   code splitting effectiveness
+
+Track regressions in CI.
+
+Publish results in docs.
+
+==================================================== PHASE 28 —
+REAL-WORLD REFERENCE APPLICATIONS
+====================================================
+
+Stop relying only on toy examples.
+
+Build real sample projects:
+
+A. Documentation site B. React dashboard C. Three.js interactive app D.
+Vanilla TypeScript tool E. Offline-first application F. Large 100+
+module application G. Monorepo package H. Private-registry simulation I.
+CI/CD production build J. CSP-restricted application
+
+Each example should: - use the documented workflow - build in CI - run
+in supported browsers - have a README - have performance measurements
+
+==================================================== PHASE 29 — ADOPTION
+PROGRAM ====================================================
+
+Technical quality alone does not create adoption.
+
+Create:
+
+GitHub: - clean README - issue templates - feature request template -
+bug template - security reporting - roadmap - discussions
+
+npm: - clear package descriptions - keywords - README - changelog -
+provenance
+
+Website: - one-line value proposition - interactive demo - benchmarks -
+architecture diagram - examples - docs - migration guide
+
+Community: - Discord/Discussions only if there is enough activity to
+maintain them.
+
+Do not create fake stars or fake testimonials.
+
+==================================================== PHASE 30 —
+OBSERVABILITY IN THE OPEN-SOURCE PROJECT
+====================================================
+
+Track non-sensitive product signals: - npm downloads - GitHub stars -
+issues - failed CI builds - release frequency - browser compatibility
+failures - benchmark regressions
+
+Do not collect user source code or telemetry by default.
+
+If telemetry is ever introduced: - opt-in - documented - anonymous -
+disabled by default - easy to remove
+
+==================================================== PHASE 31 — TESTING
+MATRIX ====================================================
+
+The existing 22 unit + 30 E2E tests are a strong foundation.
+
+Expand into:
+
+UNIT - resolver - cache keys - config parser - package resolver -
+lockfile - import-map generation - asset naming - environment handling
+
+INTEGRATION - npm registry - private registry - local cache - offline
+builds - CLI - Service Worker - import maps - source maps
+
+E2E - Chrome - Edge - Firefox - Safari/WebKit - iOS Safari where CI
+access allows - Android Chrome where CI access allows
+
+SECURITY - traversal - cache poisoning - malicious packages - CSP -
+origin boundaries
+
+PERFORMANCE - cold start - warm start - large graphs - mobile
+
+REGRESSION Every bug gets a test before the fix is merged.
+
+==================================================== PHASE 32 — FAILURE
+RECOVERY ====================================================
+
+A mature tool must recover from broken state.
+
+Test:
+
+-   corrupted WASM cache
+-   corrupted module cache
+-   interrupted install
+-   partial package download
+-   registry timeout
+-   registry returns 500
+-   browser loses network
+-   Service Worker update fails
+-   old Service Worker remains active
+-   lockfile conflicts
+-   package checksum mismatch
+
+The tool should say what happened and how to recover.
+
+Example:
+
+“Rawscript cache is corrupted. Run: rawscript cache clean Then:
+rawscript install”
+
+Not:
+
+“Unexpected error.”
+
+==================================================== PHASE 33 — SERVICE
+WORKER UPDATE STRATEGY
+====================================================
+
+Service Workers have lifecycle complexity.
+
+Create a formal update protocol:
+
+old SW | new SW installed | compatibility check | activate | cache
+migration | clients claim | runtime handshake | reload only when safe
+
+Avoid unnecessary forced reloads.
+
+Test: - one tab - multiple tabs - old runtime + new SW - new runtime +
+old SW - browser restart - offline update - failed update
+
+Version the SW protocol itself.
+
+==================================================== PHASE 34 — RUNTIME
+/ CLI VERSION COMPATIBILITY
+====================================================
+
+Do not rely only on package.json versions.
+
+Define compatibility rules.
+
+Example:
+
+Runtime 1.x supports: CLI 1.x
+
+If incompatible: show:
+
+“Rawscript runtime 2.0 requires CLI 2.x.”
+
+Never allow silent dev/prod divergence.
+
+==================================================== PHASE 35 —
+STANDARDS-FIRST DESIGN
+====================================================
+
+Use browser standards whenever they solve the problem.
+
+Prefer: - ES modules - import maps - Service Workers - Cache Storage -
+WebAssembly - Web APIs
+
+Avoid custom protocols unless necessary.
+
+This reduces long-term maintenance.
+
+==================================================== PHASE 36 — DECIDE
+WHAT NOT TO BUILD ====================================================
+
+A 10/10 product is not one with 500 features.
+
+Explicitly defer: - SSR unless there is a strong use case - full
+framework-specific magic - giant plugin ecosystem - custom package
+registry - custom programming language - proprietary component system -
+complex telemetry - unnecessary UI
+
+Focus on:
+
+Browser runtime + dependency resolution + production build + security +
+reproducibility + developer experience
+
+==================================================== PHASE 37 — PROJECT
+STRUCTURE AFTER THE UPGRADE
+====================================================
+
+A possible target:
+
+rawscript/ | |– packages/ | |– runtime/ | |– cli/ | |– resolver/ | |–
+package-manager/ | |– dev-server/ | |– wasm/ |
+-- shared/ | |-- tests/ |   |-- unit/ |   |-- integration/ |   |-- e2e/ |   |-- security/ |   |-- performance/ |–
+fixtures/ | |– examples/ | |– docs/ | |– scripts/ | |– .github/ | |–
+workflows/ |
+-- ISSUE_TEMPLATE/ | |-- rawscript.config.ts |-- README.md |-- SECURITY.md |-- CONTRIBUTING.md |-- CHANGELOG.md |-- LICENSE–
+rawscript.lock
+
+Do not blindly implement this exact structure. Split packages only when
+there is a real architectural reason.
+
+==================================================== PHASE 38 —
+IMPLEMENTATION ORDER
+====================================================
+
+DO NOT implement everything simultaneously.
+
+Use this order:
+
+STAGE 0 — Baseline - freeze current v0.2 behavior - record benchmarks -
+record test results - create compatibility matrix - tag release
+
+STAGE 1 — Dependency independence - self-host WASM - local package
+cache - lockfile - local registry resolution - offline mode
+
+STAGE 2 — Production bundler - local dependency bundling - tree
+shaking - code splitting - hashing - CSS - assets - source maps - env
+handling
+
+STAGE 3 — Resolver correctness - proper module parser/resolver in CLI -
+exports/imports conditions - peer dependencies - package graph
+
+STAGE 4 — Security - integrity - CSP - path traversal - dependency
+security - SBOM - fuzzing - resource limits
+
+STAGE 5 — Dev experience - proper dev server - WebSocket - dependency
+graph watcher - real HMR where feasible - excellent diagnostics
+
+STAGE 6 — Browser/runtime quality - cache correctness - cache eviction -
+WASM optimization - SW update protocol - compatibility matrix - mobile
+testing
+
+STAGE 7 — Professional CLI - init - install/add/remove - dev - build -
+preview - analyze - doctor - clean
+
+STAGE 8 — Documentation/adoption - website - docs - migration guides -
+reference applications - examples - benchmarks
+
+STAGE 9 — Release/security infrastructure - trusted publishing -
+provenance - SBOM - protected releases - automated changelog - security
+policy
+
+STAGE 10 — Beta - real users - collect issues - fix compatibility
+problems - do NOT break users unnecessarily
+
+STAGE 11 — 1.0 Only release 1.0 when the acceptance checklist below is
+green.
+
+==================================================== PHASE 39 — 1.0
+ACCEPTANCE CHECKLIST
+====================================================
+
+DEPENDENCIES [ ] CDN is optional [ ] Self-hosted mode works [ ] Offline
+mode works [ ] Local package cache works [ ] Lockfile works [ ] Frozen
+lockfile works [ ] Private registry support works [ ] Integrity
+verification works
+
+BUILD [ ] Local dependency bundling [ ] Tree shaking [ ] Code splitting
+[ ] Content hashing [ ] CSS [ ] Assets [ ] Source maps [ ] Environment
+handling [ ] Deterministic builds [ ] Build manifest
+
+RUNTIME [ ] Service Worker lifecycle is robust [ ] No unnecessary
+first-load reload [ ] Cache keys are content/config aware [ ] Cache
+eviction works [ ] Corrupt cache recovery works [ ] WASM self-hosting
+works [ ] Fallback behavior is documented [ ] Multi-tab behavior is
+tested
+
+DEV EXPERIENCE [ ] rawscript dev works [ ] HMR/full reload fallback
+works [ ] Dependency graph watching works [ ] Error overlay is useful [
+] Debug mode is useful [ ] CLI doctor exists [ ] Clear errors exist for
+network/cache/registry failures
+
+SECURITY [ ] CSP tested [ ] Path traversal tested [ ] Windows path
+traversal tested [ ] Cache poisoning tested [ ] Dependency confusion
+tested [ ] Malicious package cases tested [ ] Fuzzing exists [ ] SBOM
+generated [ ] Dependency audit exists [ ] Secret scanning exists
+
+TESTING [ ] Unit suite [ ] Integration suite [ ] E2E suite [ ] Chromium
+[ ] Firefox [ ] WebKit [ ] Mobile coverage where feasible [ ] Security
+tests [ ] Performance benchmarks [ ] Regression tests
+
+RELEASE [ ] SemVer [ ] Changelog [ ] GitHub release automation [ ] npm
+trusted publishing [ ] Provenance [ ] Protected tags [ ] 2FA [ ] Release
+artifacts/checksums
+
+DOCUMENTATION [ ] Quickstart [ ] Concepts [ ] CLI reference [ ]
+Configuration reference [ ] Production guide [ ] Self-hosting [ ]
+Offline guide [ ] Security guide [ ] Browser support [ ] Troubleshooting
+[ ] Migration guide [ ] Architecture guide
+
+ADOPTION [ ] Real reference apps [ ] Real-world benchmark [ ] Migration
+path [ ] Issue templates [ ] Security policy [ ] Contribution guide [ ]
+Roadmap [ ] No fake claims [ ] No fake testimonials
+
+==================================================== PHASE 40 — WHAT
+“10/10” SHOULD LOOK LIKE TO A REAL DEVELOPER
+====================================================
+
+A developer should be able to do:
+
+1.  Install: npm install -D rawscript-cli
+
+2.  Initialize: npx rawscript init
+
+3.  Develop: npx rawscript dev
+
+4.  Add dependency: npx rawscript add react react-dom
+
+5.  Work offline after install: npx rawscript dev –offline
+
+6.  Build reproducibly: npx rawscript build –frozen-lockfile
+
+7.  Analyze: npx rawscript analyze
+
+8.  Preview: npx rawscript preview
+
+9.  Deploy: upload dist/
+
+No mystery. No mandatory third-party CDN. No hidden network requirement.
+No magic state. No “works on my machine.”
+
+==================================================== PHASE 41 — THE MOST
+IMPORTANT PRODUCT DECISION
+====================================================
+
+Do not destroy Rawscript’s original identity while adding features.
+
+The original idea is valuable because it is simple:
+
+“Put TypeScript close to the browser and remove unnecessary setup.”
+
+Keep that.
+
+The mature version should be:
+
+ZERO CONFIG for beginners + FULL CONTROL for professionals
+
+Beginner:
+
+Professional:
+
+rawscript.config.ts rawscript.lock self-hosted dependencies
+deterministic build CI security policies private registry offline mode
+
+Same tool. Different depth.
+
+==================================================== FINAL PRODUCT
+POSITIONING ====================================================
+
+After the roadmap is complete, the honest positioning should be:
+
+“Rawscript is a browser-first TypeScript runtime and production build
+tool. It lets developers run TypeScript/TSX with minimal setup during
+development, while providing deterministic, self-hosted, offline-capable
+production builds with local dependency resolution.”
+
+That is much stronger than:
+
+“Rawscript is a zero-dependency Vite replacement.”
+
+==================================================== FINAL RULES FOR THE
+ENGINEERING TEAM ====================================================
+
+1.  Never sacrifice correctness for a flashy feature.
+2.  Never make CDN dependency mandatory.
+3.  Never claim a feature is supported until it has automated tests.
+4.  Never call page reload “state-preserving HMR.”
+5.  Never call esbuild-WASM a custom compiler.
+6.  Never silently fall back from offline/self-hosted mode to the
+    network.
+7.  Never allow dependency resolution to be nondeterministic.
+8.  Never store credentials in lockfiles.
+9.  Never collect telemetry without explicit consent.
+10. Never break existing projects without a migration path.
+11. Prefer standards over custom browser behavior.
+12. Keep the runtime small even if the CLI becomes sophisticated.
+13. Keep dev and production semantics aligned.
+14. Make failures explain how to recover.
+15. Benchmark every performance claim.
+16. Security fixes take priority over feature releases.
+17. Every real bug gets a regression test.
+18. Every public API needs documentation.
+19. Every release needs reproducible artifacts and provenance.
+20. Do not ship 1.0 because the README looks good. Ship 1.0 when real
+    developers can depend on it.
+
+==================================================== END STATE
+====================================================
+
+The goal is NOT:
+
+“Make the project look impressive on a resume.”
+
+The goal is:
+
+“A developer who has never met the author can install Rawscript, use it
+for a real project, deploy the output, work offline, reproduce the
+build, inspect dependencies, trust the supply chain, understand errors,
+and recover when something goes wrong.”
+
+If Rawscript reaches that point, it stops being merely a portfolio
+project and becomes a legitimate developer tool.
