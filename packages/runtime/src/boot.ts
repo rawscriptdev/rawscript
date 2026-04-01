@@ -186,6 +186,16 @@ navigator.serviceWorker.addEventListener('message', (event: MessageEvent) => {
       diagnostic.column ?? 0,
       diagnostic
     )
+  } else if (data.type === 'CONFIG_WARNING') {
+    console.warn(`rawscript [config]: ${data.option} — ${data.message}`)
+  } else if (data.type === 'CONFIG_ERROR') {
+    console.error(`rawscript [config]: ${data.message}`)
+    showErrorOverlay(
+      new Error(data.message ?? 'Unknown configuration error'),
+      data.file ?? '/tsconfig.json',
+      0,
+      0
+    )
   }
 })
 
