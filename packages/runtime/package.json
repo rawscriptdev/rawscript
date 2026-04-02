@@ -2,9 +2,31 @@
   "name": "rawscript",
   "version": "0.2.0",
   "description": "TypeScript in the browser. Zero install. Zero config. Zero dependencies.",
+  "license": "MIT",
   "type": "module",
   "main": "dist/rawscript.js",
+  "unpkg": "dist/rawscript.js",
+  "jsdelivr": "dist/rawscript.js",
   "files": ["dist/"],
+  "sideEffects": false,
+  "keywords": [
+    "typescript",
+    "browser",
+    "esm",
+    "esbuild",
+    "no-build",
+    "cdx",
+    "service-worker",
+    "tsx",
+    "jsx"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rawscript-dev/rawscript.git"
+  },
+  "engines": {
+    "node": ">=18"
+  },
   "dependencies": {},
   "devDependencies": {
     "esbuild": "^0.20.2",

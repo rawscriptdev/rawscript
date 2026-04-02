@@ -1,11 +1,36 @@
+/**
+ * sw.ts — Service Worker: lifecycle, versioned update protocol, WASM
+ * pre-cache, content-aware transpiled-output cache, import rewriting,
+ * structured diagnostics.
+ *
+ * Cache correctness (roadmap section 12): the cache key is a fingerprint of
+ * source content + JSX configuration + importmap + tsconfig + compiler
+ * version + rawscript version + transform options. Changing any of those
+ * never reuses incompatible compiled output.
+ *
+ * Corrupt-cache recovery (roadmap section 14): a cached body is verified
+ * against a stored content hash on every hit; a failed cache write never
+ * breaks serving; a corrupt WASM cache entry is deleted and refetched.
+ *
+ * Update protocol (roadmap section 15): page and SW exchange protocol/version
+ * metadata through a meta cache and HANDSHAKE/SW_ACTIVATED messages.
+ * Incompatible protocol versions trigger a full cache reset; nothing uses
+ * blind `updatefound -> reload` logic.
+ */
 declare const self: ServiceWorkerGlobalScope
 
 import { transpile, WASM_URL, WASM_CACHE, ESBUILD_VERSION, type JsxConfig } from './transpiler.js'
 import { rewriteImports, mapBareImports, collectImportSpecifiers } from './resolver.js'
 import { fnv1a } from './hash.js'
 import { RAWSCRIPT_VERSION, SW_PROTOCOL_VERSION } from './version.js'
-import { fetchTsConfig, getJsxOptionsFromTsconfig, applyPaths, unsupportedOptionWarnings, type TsConfig } from './tsconfig.js'
 import { buildCompileDiagnostic, type CompileDiagnostic } from './diagnostics.js'
+import {
+  fetchTsConfig,
+  getJsxOptionsFromTsconfig,
+  applyPaths,
+  unsupportedOptionWarnings,
+  type TsConfig,
+} from './tsconfig.js'
 
 const TRANSPILED_CACHE = 'rawscript-transpiled-v2'
 const META_CACHE = 'rawscript-meta-v1'
@@ -214,6 +239,7 @@ async function handleFetch(event: FetchEvent): Promise<Response> {
       importmap: knownImportmap,
       tsconfig: tsconfig?.raw ?? null,
       esbuild: ESBUILD_VERSION,
+      rawscript: RAWSCRIPT_VERSION,
       target: TARGET,
       format: FORMAT,
     })
@@ -263,7 +289,7 @@ async function handleFetch(event: FetchEvent): Promise<Response> {
       await cache.put(event.request, out.clone())
     } catch (err) {
       // Quota or write failure must never break serving — the entry is
-      // simply not cached this time.
+      // simply not cached this time (corrupt-cache recovery, section 14).
       console.warn(`rawscript: failed to cache ${url.pathname}, serving without caching`, err)
     }
     return out
