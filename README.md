@@ -2,10 +2,10 @@
 
 [![npm](https://img.shields.io/npm/v/rawscript?color=000&labelColor=000)](https://www.npmjs.com/package/rawscript)
 [![npm bundle size](https://img.shields.io/bundlephobia/minzip/rawscript?color=000&labelColor=000&label=runtime)](https://bundlephobia.com/package/rawscript)
-[![license](https://img.shields.io/github/license/rawscript/rawscript?color=000&labelColor=000)](./LICENSE)
+[![license](https://img.shields.io/github/license/rawscript-dev/rawscript?color=000&labelColor=000)](./LICENSE)
 [![dependencies](https://img.shields.io/badge/dependencies-0-000?labelColor=000)](./packages/runtime/package.json)
 
-TypeScript in the browser. No build step. No npm. No terminal.
+TypeScript in the browser. No build step. No terminal.
 
 ```html
 <script src="https://unpkg.com/rawscript"></script>
@@ -78,20 +78,27 @@ See [`examples/`](./examples) for working demos of each.
 
 ## Production builds
 
-rawscript is a development tool. For production, use the CLI to produce a minified, CDN-free bundle:
+The browser runtime is a development tool. For production, use the CLI to produce a minified bundle with no rawscript runtime:
 
 ```sh
 npx rawscript build
 ```
 
-Reads `index.html`, finds all `<script type="module" src="*.ts">` entries, bundles them with esbuild (Node API, not WASM), and writes to `dist/`. The output has no CDN dependencies and no reference to rawscript itself.
+Reads `index.html`, finds all `<script type="module" src="*.ts">` entries, bundles them with esbuild (Node API, not WASM), and writes to `dist/`. The output contains no reference to rawscript and no in-browser transpilation — but npm dependencies are still resolved through the esm.sh importmap, so production output requires network access to esm.sh.
 
 ```sh
 npx rawscript build --entry index.html --out dist --no-minify
-npx rawscript serve   # static file server on :3000, no config
+npx rawscript build --typecheck   # run the real TypeScript compiler first, abort on errors
+npx rawscript serve               # static file server on :3000, no config
+npx rawscript typecheck           # type-check the project (noEmit), exit 1 on errors
 ```
 
-The CLI uses esbuild and commander as dependencies. These are never part of the browser runtime.
+**`build` and `typecheck` are deliberately different operations:**
+
+- `rawscript build` transpiles and bundles — it does **not** type-check. esbuild strips types without verifying them.
+- `rawscript typecheck` runs the real TypeScript compiler (`tsc`) with `noEmit` and reports every diagnostic with file, line, and column. Use it in CI, editors, or `build --typecheck` to fail a production build on type errors. Without a `tsconfig.json` it applies browser-friendly defaults (strict, ESNext, bundler module resolution, DOM libs); with one it honors `include`/`exclude` and all compiler options.
+
+The CLI uses esbuild, commander, and typescript as dependencies. These are never part of the browser runtime.
 
 ---
 
@@ -99,32 +106,32 @@ The CLI uses esbuild and commander as dependencies. These are never part of the 
 
 ```
 rawscript/
+├── .github/workflows/      # ci.yml (PR + push), publish.yml (v* tags)
 ├── packages/
-│   ├── runtime/              # Zero-dependency browser library
-│   │   └── src/
-│   │       ├── boot.ts       # Main thread: SW registration, reload logic
-│   │       ├── sw.ts         # Service Worker: fetch interception, orchestration
-│   │       ├── transpiler.ts # esbuild-wasm wrapper, lazy-initialized
-│   │       ├── resolver.ts   # Bare import → esm.sh rewriter (pure regex)
-│   │       ├── loader.ts     # First-load progress indicator
-│   │       ├── hmr.ts        # BroadcastChannel-based change notification
-│   │       ├── watcher.ts    # ETag polling, dev mode only
-│   │       ├── fallback.ts   # Blob URL fallback for file:// and sandboxed iframes
-│   │       ├── env.ts        # Environment detection (SW available, isDev, etc.)
-│   │       ├── errors.ts     # Error overlay, sourcemap-aware
-│   │       └── debugpanel.ts # Ctrl+Shift+R dev panel
+│   ├── runtime/            # Zero-dependency browser library
+│   │   ├── src/
+│   │   │   ├── boot.ts       # Main thread: SW registration, HMR wiring, error overlay
+│   │   │   ├── sw.ts         # Service Worker: fetch interception, cache, orchestration
+│   │   │   ├── transpiler.ts # esbuild-wasm wrapper, lazy-initialized
+│   │   │   ├── resolver.ts   # Bare import → esm.sh rewriter (pure regex)
+│   │   │   ├── loader.ts     # First-load progress indicator
+│   │   │   ├── hmr.ts        # ETag polling + CACHE_BUST via MessageChannel
+│   │   │   ├── watcher.ts    # Dev-mode coordinator (polls only when HMR enabled)
+│   │   │   ├── fallback.ts   # Blob URL fallback for file:// and sandboxed iframes
+│   │   │   ├── env.ts        # Environment detection (SW available, HMR allowed, esm)
+│   │   │   ├── errors.ts     # Error overlay with source code frame
+│   │   │   └── debugpanel.ts # Ctrl/Cmd+Shift+\ dev panel
+│   │   ├── build.js          # esbuild bundle → dist/rawscript.js + dist/rawscript-sw.js
+│   │   └── dist/             # IIFE entry + ESM service worker (copied to repo root for dev)
 │   └── cli/
-│       └── src/
-│           ├── index.ts      # commander entry, build + serve commands
-│           ├── bundler.ts    # esbuild Node API wrapper
-│           └── html.ts       # HTML parser: finds .ts entries, rewrites output
-└── examples/
-    ├── vanilla/
-    ├── react/
-    ├── preact/
-    ├── vue/
-    ├── solid/
-    └── three/
+│       ├── src/
+│       │   ├── index.ts      # commander entry, build + serve commands
+│       │   ├── bundler.ts    # esbuild Node API wrapper, HTML rewrite, importmap merge
+│       │   └── serve.ts      # zero-config static server
+│       └── build.mjs         # bundles the CLI into a single self-contained dist/cli.mjs
+├── scripts/serve.mjs         # static server used by the e2e suite
+├── tests/                    # Playwright e2e (smoke, jsx, examples, cli) + resolver units
+└── examples/                 # vanilla, react, preact, solid, vue, three
 ```
 
 **The invariant that must never break:** `packages/runtime/package.json` → `"dependencies": {}`. The runtime is static files served from a CDN. It has no install step because it imposes no install step.
@@ -133,8 +140,8 @@ rawscript/
 
 | File | Format | Entry | Size |
 |---|---|---|---|
-| `dist/rawscript.js` | IIFE | `boot.ts` | ~2kb min+gz |
-| `dist/rawscript-sw.js` | ESM | `sw.ts` | ~300kb (esbuild-wasm ref, not inlined) |
+| `dist/rawscript.js` | IIFE | `boot.ts` | ~31KB (minified, ~9KB gz) |
+| `dist/rawscript-sw.js` | ESM | `sw.ts` | ~9KB (esbuild-wasm imported externally) |
 
 `rawscript.js` is the script tag users include. It registers the SW and handles the initial reload. `rawscript-sw.js` is registered at `/rawscript-sw.js` by default and does all the actual work.
 
@@ -164,7 +171,7 @@ Or configure a custom path:
 
 ## Hot reload
 
-In dev mode (`localhost` or `127.0.0.1`), rawscript polls your `.ts` files using `HEAD` requests and compares `ETag` / `Last-Modified` headers. On change, the SW busts its module cache for that file and the page reloads.
+In dev mode (localhost or `127.0.0.1`), rawscript polls your `.ts` files using `HEAD` requests and compares `ETag` / `Last-Modified` headers. On change, the SW busts its module cache for that file and the page reloads.
 
 No dev server required. No WebSocket. No Node process. Polling interval defaults to 1000ms and is configurable:
 
@@ -174,6 +181,46 @@ No dev server required. No WebSocket. No Node process. Polling interval defaults
 
 Hot reload is disabled in production (any non-localhost origin).
 
+Even with polling disabled, a plain page reload always picks up edits: the SW re-fetches every source file on each request and compares it against a content fingerprint, so the cache can never serve stale code after a reload.
+
+---
+
+## Caching and updates
+
+rawscript never invalidates caches by hand. Every compiled artifact is keyed by a content fingerprint that covers the source file **and** everything that affects its output: the HTML import map, tsconfig settings, the esbuild version, and the rawscript runtime version.
+
+- The SW re-fetches the source on every request (`cache: 'no-store'`), computes the fingerprint, and serves the cached output only if it matches. Any change — source edit, import map entry, tsconfig tweak — produces a new fingerprint and a fresh compile.
+- Cached responses carry a body hash checked on every hit. A corrupt entry (truncated write, partial eviction) is detected, deleted, and recompiled automatically.
+- Cache failures are never fatal: quota errors during writes and network failures during fetches degrade to stale-but-working output instead of broken pages.
+- Cache names are versioned (`rawscript-transpiled-v2`, `rawscript-meta-v1`, `rawscript-wasm-v1`). When the SW protocol version changes, the SW wipes all rawscript caches on activation.
+
+The SW and the page talk through a small message protocol: the page sends a handshake (via a `MessageChannel` port), the SW replies with its protocol and rawscript versions, and a version mismatch triggers exactly one controlled reload. The first load performs at most one reload, so there is no reload loop.
+
+---
+
+## Configuration
+
+There is deliberately **no `rawscript.config.*` file**. The configuration surface is exactly:
+
+- `tsconfig.json` — JSX settings, paths aliases, type checking (via the CLI)
+- the HTML import map — dependency versions
+- `data-*` attributes on the boot script tag — runtime knobs like the HMR interval
+
+That covers everything a rawscript project genuinely needs to configure, and it keeps the zero-config story intact. If a need appears that these cannot express, a config file will be added then — not before.
+
+---
+
+## Diagnostics
+
+Compile errors surface as a structured overlay on the page, answering four questions:
+
+- **WHAT** — the error category (syntax, resolution, JSX, tsconfig, runtime) and message
+- **WHERE** — the file, line, and column, with a code frame marking the error line
+- **WHY** — a plain-language explanation of the likely cause
+- **HOW** — a concrete fix suggestion, plus the import chain that led to the failing file
+
+The overlay auto-hides after a few seconds and shows a compact toast on subsequent loads. Warnings (for example, unsupported tsconfig options) appear as non-blocking `[config]` badges. For type errors, use `rawscript typecheck` in the CLI, which runs the real TypeScript compiler.
+
 ---
 
 ## Fallback: file:// and sandboxed iframes
@@ -182,7 +229,7 @@ Service Workers are unavailable on `file://` protocol, in cross-origin iframes, 
 
 1. Finds all `<script type="module" src="*.ts">` tags in the document
 2. Fetches each source file, transpiles it in the main thread (esbuild-wasm, same WASM binary)
-3. Rewrites imports, resolves relative imports recursively
+3. Rewrites imports, resolves relative imports recursively via Blob URLs
 4. Replaces each script's `src` with a `Blob` URL
 
 The fallback is slower (no cross-load caching, main thread transpilation) and logs a warning. It exists so rawscript works everywhere, not as a preferred path.
@@ -194,12 +241,10 @@ The fallback is slower (no cross-load caching, main thread transpilation) and lo
 | Browser | Minimum version | Notes |
 |---|---|---|
 | Chrome / Edge | 89 | Full support |
-| Firefox | 84 | Full support |
-| Safari | 15.4 | Full support |
-| Firefox ESR | 91 | Full support |
-| IE | — | Not supported |
+| Firefox | 114 | Module-type Service Workers |
+| Safari | 16.4 | Import maps + module SW |
 
-Requirements: Service Workers, ES modules, `BroadcastChannel`, `fetch`. All present in any browser released after 2021.
+Requirements: module-type Service Workers, ES modules, import maps, `BroadcastChannel`, `fetch`. IE is not supported.
 
 ---
 
@@ -230,7 +275,7 @@ rawscript is the right tool in specific contexts. It is not a replacement for a 
 ## Development
 
 ```sh
-git clone https://github.com/rawscript/rawscript
+git clone https://github.com/rawscript-dev/rawscript
 cd rawscript
 pnpm install
 pnpm build        # builds packages/runtime/dist/
@@ -248,11 +293,13 @@ There is no watch mode for the examples. Edit a source file in `packages/runtime
 ### Running tests
 
 ```sh
-pnpm test         # Playwright end-to-end tests
+pnpm test:unit    # resolver unit tests (node:test)
+pnpm test:e2e     # Playwright e2e across chromium/firefox/webkit
+pnpm test         # both
 pnpm typecheck    # tsc --noEmit across all packages
 ```
 
-Tests launch a real browser via Playwright. There are no unit tests for the SW itself — integration tests against a real browser are more reliable for fetch interception behavior.
+The e2e suite launches real browsers via Playwright and covers: SW fetch interception + WASM pre-caching, importmap-driven JSX transforms, all five framework examples, and the CLI's build + serve round-trip. There are no unit tests for the SW itself — integration tests against a real browser are more reliable for fetch interception behavior.
 
 ### Adding a new runtime module
 
@@ -279,11 +326,11 @@ Also bump the cache name in `sw.ts` (`rawscript-wasm-vN`) to force re-fetch on e
 Releases are automated via GitHub Actions on version tags.
 
 ```sh
-npm version patch   # or minor / major
-git push --follow-tags
+git tag v0.2.0
+git push origin v0.2.0
 ```
 
-The `publish.yml` workflow runs `npm ci`, `npm test`, and `npm publish` from `packages/runtime/`. The CLI (`packages/cli/`) is published separately under the same `rawscript` package name with a `bin` entry.
+The `publish.yml` workflow runs typecheck, build, and the full test suite, then publishes `rawscript` (runtime) followed by `rawscript-cli` to npm with provenance. Keep the version in sync across `package.json`, `packages/runtime/package.json`, and `packages/cli/package.json`.
 
 ---
 
@@ -293,9 +340,9 @@ Issues and PRs are welcome. A few things to know before contributing:
 
 - **The zero-dependency constraint is absolute.** If your change requires adding a runtime dependency to `packages/runtime/package.json`, it will not be merged regardless of how useful the feature is.
 - **The SW is the critical path.** Changes to `sw.ts` or `transpiler.ts` require Playwright tests that cover the actual fetch interception. Untested SW changes have caused subtle bugs that only manifest in specific browser versions.
-- **resolver.ts is intentionally regex-based.** We know a proper AST parser would be more correct. We have chosen not to add one. The regex handles all real-world cases we've encountered. If you've found one it doesn't handle, open an issue with a reproduction.
+- **resolver.ts is intentionally regex-based.** We know a proper AST parser would be more correct. We have chosen not to add one. The regex handles all real-world cases we've encountered, and it has unit tests in `tests/unit/`. If you've found one it doesn't handle, open an issue with a reproduction.
 
-See [CONTRIBUTING.md](./CONTRIBUTING.md) for setup details and the list of good first issues.
+See [CONTRIBUTING.md](./CONTRIBUTING.md) for setup details and the release process.
 
 ---
 
