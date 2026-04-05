@@ -1,0 +1,11 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "opa": {
+      "type": "local",
+      "command": ["python", "-m", "server.opa.mcp"],
+      "cwd": "D:\\opus-proxy",
+      "enabled": true
+    }
+  }
+}
