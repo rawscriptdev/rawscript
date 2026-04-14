@@ -3,6 +3,8 @@
  *
  * Provides:
  * - `rawscript build` — bundle an in-browser TS app into static JS + importmap
+ *   (with `--local-deps`, npm/pnpm dependencies are bundled from the local
+ *   node_modules so production output has no runtime CDN dependency)
  * - `rawscript typecheck` — real TypeScript checking (noEmit)
  * - `rawscript serve` — zero-config static dev server for the current directory
  * - `rawscript preview --dir` — serve production output as it would be deployed
@@ -26,8 +28,14 @@ program
   .option('--out <path>', 'Output directory', 'dist')
   .option('--no-minify', 'Disable minification')
   .option('--typecheck', 'Run the real TypeScript compiler first and abort on type errors')
+  .option(
+    '--local-deps',
+    'Bundle npm dependencies from the local node_modules (installed by npm/pnpm) ' +
+      'instead of externalizing them to esm.sh. Production output then has no runtime ' +
+      'CDN dependency, and dynamic imports are code-split.'
+  )
   .action(async (options) => {
-    await build(options.entry, options.out, options.minify, options.typecheck)
+    await build(options.entry, options.out, options.minify, options.typecheck, options.localDeps)
   })
 
 program

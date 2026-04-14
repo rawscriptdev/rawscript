@@ -5,10 +5,21 @@
  * entries, bundles each with esbuild (Node API, not WASM), and writes the
  * results to the output directory next to a rewritten copy of the HTML.
  *
- * npm imports are externalized (packages: 'external') and the output HTML
- * gains an importmap that maps them to esm.sh URLs, so the bundle runs in a
- * browser with zero additional setup. The rawscript runtime script tag is
- * stripped — the output has no dependency on rawscript itself.
+ * Two dependency modes (roadmap Phase B — dependencies + production build):
+ *
+ * - Default (zero-config, CDN): npm imports are externalized and the output
+ *   HTML gains an importmap mapping them to esm.sh URLs, so the bundle runs
+ *   in a browser with zero additional setup. This is the existing
+ *   zero-config path and remains the default.
+ *
+ * - --local-deps: npm imports are bundled from the project's locally
+ *   installed node_modules. npm/pnpm are the dependency authority — rawscript
+ *   never downloads or resolves packages itself; a dependency that is not
+ *   installed locally is a build error with an actionable message, never a
+ *   silent fallback. The production output has no runtime CDN dependency.
+ *
+ * In both modes the rawscript runtime script tag is stripped — the output
+ * has no dependency on rawscript itself.
  */
 
 import * as esbuild from 'esbuild'
@@ -21,7 +32,8 @@ export async function build(
   entryPoint: string,
   outDir: string,
   minify = true,
-  typecheck = false
+  typecheck = false,
+  localDeps = false
 ): Promise<void> {
   const entryAbs = path.resolve(entryPoint)
 
@@ -74,21 +86,33 @@ export async function build(
     const relOut = path.join(outAbs, tsPath.replace(/\.tsx?$/, '.js'))
     fs.mkdirSync(path.dirname(relOut), { recursive: true })
 
+    const options: esbuild.BuildOptions = {
+      entryPoints: [absPath],
+      bundle: true,
+      format: 'esm',
+      platform: 'browser',
+      target: 'es2022',
+      minify,
+      sourcemap: 'inline',
+      metafile: true,
+      write: false,
+      ...jsxConfig,
+    }
+
+    if (localDeps) {
+      // Local dependency mode: bundle npm imports from the project's
+      // node_modules (installed by npm/pnpm).
+      options.outdir = outAbs
+      options.outbase = entryDir
+    } else {
+      // Zero-config mode: externalize npm imports; the output HTML gains an
+      // esm.sh importmap so the bundle runs without any local install.
+      options.outfile = relOut
+      options.packages = 'external'
+    }
+
     try {
-      const result = await esbuild.build({
-        entryPoints: [absPath],
-        bundle: true,
-        format: 'esm',
-        outfile: relOut,
-        platform: 'browser',
-        target: 'es2022',
-        minify,
-        sourcemap: 'inline',
-        packages: 'external',
-        metafile: true,
-        write: false,
-        ...jsxConfig,
-      })
+      const result = await esbuild.build(options)
 
       for (const output of Object.values(result.metafile?.outputs ?? {})) {
         for (const imp of output.imports) {
