@@ -1,9 +1,13 @@
 /**
- * serve.ts — Static file server for the current directory, no config
+ * serve.ts — Static file server for a directory, no config
  *
- * Serves the working directory on the configured port with correct MIME types
- * for .ts/.tsx/.wasm and ETag / Last-Modified headers so rawscript's HMR
+ * Serves a directory on the configured port with correct MIME types for
+ * .ts/.tsx/.wasm and ETag / Last-Modified headers so rawscript's HMR
  * polling works. Traversal-safe and query-string tolerant.
+ *
+ * Shared by `rawscript serve` (dev, serves the working directory) and
+ * `rawscript preview --dir` (production, serves built output exactly as it
+ * would be deployed).
  */
 
 import http from 'http'
@@ -37,26 +41,26 @@ function etagFor(stats: fs.Stats): string {
   return `"${stats.size.toString(16)}-${Math.floor(stats.mtimeMs).toString(16)}"`
 }
 
-export function serve(port: number): void {
-  const root = process.cwd()
+export function serveDir(root: string, port: number, label: string): void {
+  const rootAbs = path.resolve(root)
 
-  console.log(`Rawscript dev server running at http://localhost:${port}`)
-  console.log(`Serving directory: ${root}`)
+  console.log(`Rawscript ${label} running at http://localhost:${port}`)
+  console.log(`Serving directory: ${rootAbs}`)
   console.log('Press Ctrl+C to stop')
 
   const server = http.createServer((req: http.IncomingMessage, res: http.ServerResponse) => {
     const urlPath = decodeURIComponent((req.url ?? '/').split('?')[0])
-    const filePath = path.join(root, urlPath === '/' ? 'index.html' : urlPath)
+    const filePath = path.join(rootAbs, urlPath === '/' ? 'index.html' : urlPath)
 
     // Traversal guard: the resolved path must stay inside the root.
-    const rel = path.relative(root, path.resolve(filePath))
+    const rel = path.relative(rootAbs, path.resolve(filePath))
     if (rel.startsWith('..') || path.isAbsolute(rel)) {
       res.statusCode = 403
       res.end('Forbidden')
       return
     }
 
-    let finalPath = path.resolve(root, rel)
+    let finalPath = path.resolve(rootAbs, rel)
     if (fs.existsSync(finalPath) && fs.statSync(finalPath).isDirectory()) {
       finalPath = path.join(finalPath, 'index.html')
     }
@@ -92,6 +96,10 @@ export function serve(port: number): void {
     console.error(`Server error: ${err}`)
     process.exit(1)
   })
+}
+
+export function serve(port: number): void {
+  serveDir(process.cwd(), port, 'dev server')
 }
 
 // Direct execution: `node src/serve.ts` (dev convenience). The bundled
