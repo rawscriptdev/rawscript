@@ -1,14 +1,17 @@
 /**
  * index.ts — CLI entry point, commander configuration
  *
- * Provides `rawscript build` (bundle an in-browser TS app into static JS +
- * importmap) and `rawscript serve` (static file server for the current
- * directory).
+ * Provides:
+ * - `rawscript build` — bundle an in-browser TS app into static JS + importmap
+ * - `rawscript typecheck` — real TypeScript checking (noEmit)
+ * - `rawscript serve` — zero-config static dev server for the current directory
+ * - `rawscript preview --dir` — serve production output as it would be deployed
  */
 
 import { program } from 'commander'
+import * as path from 'path'
 import { build } from './bundler.js'
-import { serve } from './serve.js'
+import { serve, serveDir } from './serve.js'
 import { runTypecheck } from './typecheck.js'
 
 program
@@ -58,6 +61,15 @@ program
   .option('--port <number>', 'Port to serve on', '3000')
   .action(async (options) => {
     await serve(parseInt(options.port, 10))
+  })
+
+program
+  .command('preview')
+  .description('Serve a production output directory exactly as it would be deployed')
+  .option('--dir <path>', 'Output directory to serve', 'dist')
+  .option('--port <number>', 'Port to serve on', '3000')
+  .action(async (options) => {
+    serveDir(path.resolve(options.dir), parseInt(options.port, 10), 'preview')
   })
 
 program.parse()
