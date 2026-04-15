@@ -93,7 +93,6 @@ export async function build(
       platform: 'browser',
       target: 'es2022',
       minify,
-      sourcemap: 'inline',
       metafile: true,
       write: false,
       ...jsxConfig,
@@ -114,11 +113,15 @@ export async function build(
     try {
       const result = await esbuild.build(options)
 
-      for (const output of Object.values(result.metafile?.outputs ?? {})) {
-        for (const imp of output.imports) {
-          if (imp.kind === 'import-statement' || imp.kind === 'dynamic-import') {
-            if (isBareSpecifier(imp.path)) {
-              externalSpecifiers.add(imp.path)
+      // In CDN mode the externalized specifiers become the esm.sh importmap;
+      // in --local-deps mode everything is bundled, so nothing is externalized.
+      if (!localDeps) {
+        for (const output of Object.values(result.metafile?.outputs ?? {})) {
+          for (const imp of output.imports) {
+            if (imp.kind === 'import-statement' || imp.kind === 'dynamic-import') {
+              if (isBareSpecifier(imp.path)) {
+                externalSpecifiers.add(imp.path)
+              }
             }
           }
         }
