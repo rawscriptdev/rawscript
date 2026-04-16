@@ -130,7 +130,12 @@ export async function build(
         }
       }
 
-      fs.writeFileSync(relOut, result.outputFiles[0].text)
+      // Write every output file (entry JS, split chunks, bundled CSS).
+      for (const output of result.outputFiles ?? []) {
+        fs.mkdirSync(path.dirname(output.path), { recursive: true })
+        fs.writeFileSync(output.path, output.text)
+      }
+
       console.log(`✓ Built ${tsPath} → ${path.relative(process.cwd(), relOut)}`)
     } catch (err) {
       console.error(`✗ Failed to build ${tsPath}:`, err)
