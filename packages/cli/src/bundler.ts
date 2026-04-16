@@ -16,7 +16,8 @@
  *   installed node_modules. npm/pnpm are the dependency authority — rawscript
  *   never downloads or resolves packages itself; a dependency that is not
  *   installed locally is a build error with an actionable message, never a
- *   silent fallback. The production output has no runtime CDN dependency.
+ *   silent fallback. Dynamic imports are code-split into separate chunk
+ *   files. The production output has no runtime CDN dependency.
  *
  * In both modes the rawscript runtime script tag is stripped — the output
  * has no dependency on rawscript itself.
@@ -100,9 +101,11 @@ export async function build(
 
     if (localDeps) {
       // Local dependency mode: bundle npm imports from the project's
-      // node_modules (installed by npm/pnpm).
+      // node_modules (installed by npm/pnpm) and code-split dynamic imports
+      // into shared chunks (roadmap items 14 + 15).
       options.outdir = outAbs
       options.outbase = entryDir
+      options.splitting = true
     } else {
       // Zero-config mode: externalize npm imports; the output HTML gains an
       // esm.sh importmap so the bundle runs without any local install.
