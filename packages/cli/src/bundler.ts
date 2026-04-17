@@ -146,7 +146,19 @@ export async function build(
 
       console.log(`✓ Built ${tsPath} → ${path.relative(process.cwd(), relOut)}`)
     } catch (err) {
-      console.error(`✗ Failed to build ${tsPath}:`, err)
+      const message = err instanceof Error ? err.message : String(err)
+      if (localDeps && /Could not resolve/.test(message)) {
+        console.error(
+          `✗ Failed to build ${tsPath}: ${message}\n` +
+            'Local dependency mode resolves packages from the project\u2019s node_modules ' +
+            '(npm/pnpm are the dependency authority — rawscript never downloads packages itself). ' +
+            `Run \`npm install\` or \`pnpm install\` in ` +
+            `${path.relative(process.cwd(), entryDir) || '.'} and retry. ` +
+            'Node.js built-ins cannot be bundled for the browser.'
+        )
+      } else {
+        console.error(`✗ Failed to build ${tsPath}:`, err)
+      }
       throw err
     }
   }
