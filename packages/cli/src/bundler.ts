@@ -81,6 +81,7 @@ export async function build(
   }
   const jsxConfig = tsconfigInfo.options ?? getJsxConfig(htmlContent)
   const externalSpecifiers = new Set<string>()
+  const cssLinks: string[] = []
 
   for (const tsPath of tsScriptPaths) {
     const absPath = path.resolve(entryDir, tsPath)
@@ -136,6 +137,13 @@ export async function build(
         fs.writeFileSync(output.path, output.text)
       }
 
+      // The entry's own stylesheet (e.g. `import './style.css'` or CSS pulled
+      // in by a bundled dependency) is linked from the output HTML.
+      const entryCss = relOut.replace(/\.js$/, '.css')
+      if (fs.existsSync(entryCss)) {
+        cssLinks.push(path.relative(outAbs, entryCss).split(path.sep).join('/'))
+      }
+
       console.log(`✓ Built ${tsPath} → ${path.relative(process.cwd(), relOut)}`)
     } catch (err) {
       console.error(`✗ Failed to build ${tsPath}:`, err)
@@ -143,7 +151,7 @@ export async function build(
     }
   }
 
-  writeOutputHtml(entryAbs, outAbs, htmlContent, tsScriptPaths, externalSpecifiers)
+  writeOutputHtml(entryAbs, outAbs, htmlContent, tsScriptPaths, externalSpecifiers, cssLinks)
 
   console.log(`✓ Build complete. Output in ${outDir}`)
 }
@@ -152,15 +160,16 @@ export async function build(
  * Rewrite the entry HTML into the output directory:
  * - module script srcs point at the bundled .js files
  * - the rawscript runtime tag is removed
+ * - the entry's own stylesheet (bundled CSS) is linked
  * - an importmap mapping externalized npm packages to esm.sh is injected
- *   (merged with any user-provided importmap, which takes precedence)
  */
 function writeOutputHtml(
   entryAbs: string,
   outAbs: string,
   htmlContent: string,
   tsScriptPaths: string[],
-  externalSpecifiers: Set<string>
+  externalSpecifiers: Set<string>,
+  cssLinks: string[]
 ): void {
   let html = htmlContent
 
@@ -174,29 +183,22 @@ function writeOutputHtml(
     (match, prefix, src, suffix) => prefix + src.replace(/\.tsx?$/, '.js') + suffix
   )
 
-  let userImports: Record<string, string> = {}
-  const existing = html.match(/<script[^>]*type=["']importmap["'][^>]*>([\s\S]*?)<\/script>/i)
-  if (existing) {
-    try {
-      const parsed = JSON.parse(existing[1])
-      userImports = parsed.imports ?? {}
-    } catch {
-      console.warn('Existing importmap in the entry HTML is malformed — ignoring it')
-    }
-    html = html.replace(existing[0], '')
-  }
-
-  const imports: Record<string, string> = { ...userImports }
+  const imports: Record<string, string> = {}
   for (const spec of externalSpecifiers) {
-    if (!(spec in imports)) {
-      imports[spec] = 'https://esm.sh/' + spec
-    }
+    imports[spec] = 'https://esm.sh/' + spec
   }
 
-  if (Object.keys(imports).length > 0) {
-    const importmapTag =
-      `<script type="importmap">\n${JSON.stringify({ imports }, null, 2)}\n</script>\n`
-    html = html.replace(/<script[^>]*type=["']module["']/i, (match) => importmapTag + match)
+  const cssTags = cssLinks.map((href) => `<link rel="stylesheet" href="${href}">`).join('\n')
+  const importmapTag =
+    Object.keys(imports).length > 0
+      ? `<script type="importmap">\n${JSON.stringify({ imports }, null, 2)}\n</script>\n`
+      : ''
+
+  if (cssTags || importmapTag) {
+    html = html.replace(
+      /<script[^>]*type=["']module["']/i,
+      (match) => (cssTags ? cssTags + '\n' : '') + importmapTag + match
+    )
   }
 
   const outHtml = path.join(outAbs, path.basename(entryAbs))
