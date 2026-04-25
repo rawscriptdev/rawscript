@@ -120,14 +120,8 @@ export async function build(
       // In CDN mode the externalized specifiers become the esm.sh importmap;
       // in --local-deps mode everything is bundled, so nothing is externalized.
       if (!localDeps) {
-        for (const output of Object.values(result.metafile?.outputs ?? {})) {
-          for (const imp of output.imports) {
-            if (imp.kind === 'import-statement' || imp.kind === 'dynamic-import') {
-              if (isBareSpecifier(imp.path)) {
-                externalSpecifiers.add(imp.path)
-              }
-            }
-          }
+        for (const spec of collectExternalSpecifiers(result)) {
+          externalSpecifiers.add(spec)
         }
       }
 
@@ -166,6 +160,44 @@ export async function build(
   writeOutputHtml(entryAbs, outAbs, htmlContent, tsScriptPaths, externalSpecifiers, cssLinks)
 
   console.log(`✓ Build complete. Output in ${outDir}`)
+}
+
+/**
+ * Run an esbuild build of a single entry with npm packages externalized and
+ * return the bare specifiers it imports (static and dynamic). Used by both
+ * `build` (to build the esm.sh importmap) and `deps` (to decide which
+ * locally installed packages need a bundle).
+ */
+export async function collectExternalBareSpecifiers(
+  entryAbs: string,
+  jsxConfig: Partial<esbuild.BuildOptions>
+): Promise<Set<string>> {
+  const result = await esbuild.build({
+    entryPoints: [entryAbs],
+    bundle: true,
+    format: 'esm',
+    platform: 'browser',
+    target: 'es2022',
+    packages: 'external',
+    write: false,
+    metafile: true,
+    ...jsxConfig,
+  })
+  return collectExternalSpecifiers(result)
+}
+
+function collectExternalSpecifiers(result: esbuild.BuildResult): Set<string> {
+  const set = new Set<string>()
+  for (const output of Object.values(result.metafile?.outputs ?? {})) {
+    for (const imp of output.imports) {
+      if (imp.kind === 'import-statement' || imp.kind === 'dynamic-import') {
+        if (isBareSpecifier(imp.path)) {
+          set.add(imp.path)
+        }
+      }
+    }
+  }
+  return set
 }
 
 /**
