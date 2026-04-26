@@ -11,8 +11,9 @@
  * With the generated import map the browser resolves bare specifiers to
  * local files (no CDN, no custom rewriting — import maps are the standard
  * mechanism, and the Service Worker leaves mapped specifiers untouched).
- * Specifiers that cannot be bundled locally (not installed) are left out
- * with a warning — those keep using the existing zero-config CDN fallback.
+ * Specifiers that cannot be bundled locally (not installed, Node.js
+ * built-ins, or .css side-effect imports) are left out with a warning —
+ * those keep using the existing zero-config CDN fallback.
  */
 
 import * as esbuild from 'esbuild'
@@ -20,6 +21,51 @@ import * as fs from 'fs'
 import * as path from 'path'
 import { collectExternalBareSpecifiers, extractTsScriptPaths } from './bundler.js'
 import { readTsconfigInfo } from './tsconfig.js'
+
+const NODE_BUILTINS = new Set([
+  'assert',
+  'async_hooks',
+  'buffer',
+  'child_process',
+  'cluster',
+  'console',
+  'constants',
+  'crypto',
+  'dgram',
+  'diagnostics_channel',
+  'dns',
+  'domain',
+  'events',
+  'fs',
+  'http',
+  'http2',
+  'https',
+  'inspector',
+  'module',
+  'net',
+  'os',
+  'path',
+  'perf_hooks',
+  'process',
+  'punycode',
+  'querystring',
+  'readline',
+  'repl',
+  'stream',
+  'string_decoder',
+  'sys',
+  'timers',
+  'tls',
+  'trace_events',
+  'tty',
+  'url',
+  'util',
+  'v8',
+  'vm',
+  'wasi',
+  'worker_threads',
+  'zlib',
+])
 
 export async function generateDeps(entryPoint: string, outRel: string): Promise<void> {
   const entryAbs = path.resolve(entryPoint)
@@ -71,9 +117,23 @@ export async function generateDeps(entryPoint: string, outRel: string): Promise<
   fs.mkdirSync(outAbs, { recursive: true })
 
   const imports: Record<string, string> = {}
+  const skipped: string[] = []
   const failed: string[] = []
 
   for (const spec of [...specifiers].sort()) {
+    const bare = spec.startsWith('node:') ? spec.slice(5) : spec
+    if (NODE_BUILTINS.has(bare)) {
+      skipped.push(`${spec} — Node.js built-in, cannot run in the browser`)
+      continue
+    }
+    if (spec.endsWith('.css')) {
+      skipped.push(
+        `${spec} — CSS side-effect imports cannot be resolved by a browser import map; ` +
+          'link the stylesheet with a <link> tag instead'
+      )
+      continue
+    }
+
     const outFile = path.join(outAbs, ...spec.split('/')) + '.js'
     fs.mkdirSync(path.dirname(outFile), { recursive: true })
     try {
@@ -127,6 +187,10 @@ export async function generateDeps(entryPoint: string, outRel: string): Promise<
   console.log('importmap.json contains the same map for reference; browsers only apply inline')
   console.log('import maps today.')
   console.log('')
+
+  for (const s of skipped) {
+    console.warn(`rawscript [dependency]: skipped ${s}`)
+  }
 }
 
 /** Import map value for a bundled file, relative to the project entry dir. */
