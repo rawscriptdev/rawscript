@@ -8,6 +8,8 @@
  * - `rawscript typecheck` — real TypeScript checking (noEmit)
  * - `rawscript serve` — zero-config static dev server for the current directory
  * - `rawscript preview --dir` — serve production output as it would be deployed
+ * - `rawscript deps` — bundle locally installed npm/pnpm dependencies into
+ *   browser-ready ESM and generate a browser import map for them
  */
 
 import { program } from 'commander'
@@ -15,6 +17,7 @@ import * as path from 'path'
 import { build } from './bundler.js'
 import { serve, serveDir } from './serve.js'
 import { runTypecheck } from './typecheck.js'
+import { generateDeps } from './deps.js'
 
 program
   .name('rawscript')
@@ -78,6 +81,19 @@ program
   .option('--port <number>', 'Port to serve on', '3000')
   .action(async (options) => {
     serveDir(path.resolve(options.dir), parseInt(options.port, 10), 'preview')
+  })
+
+program
+  .command('deps')
+  .description(
+    'Bundle locally installed npm/pnpm dependencies into browser-ready ESM and generate ' +
+      'a browser import map pointing at them (npm/pnpm are the dependency authority; ' +
+      'run `npm install` / `pnpm install` first).'
+  )
+  .option('--entry <path>', 'Path to index.html entry point', 'index.html')
+  .option('--out <path>', 'Output directory for dependency bundles and the import map', '.rawscript/deps')
+  .action(async (options) => {
+    await generateDeps(options.entry, options.out)
   })
 
 program.parse()
