@@ -82,7 +82,10 @@ export function serveDir(root: string, port: number, label: string): void {
         return
       }
 
-      const type = MIME[path.extname(finalPath).toLowerCase()] ?? 'application/octet-stream'
+      const type =
+        path.basename(finalPath).toLowerCase() === 'importmap.json'
+          ? 'application/importmap+json; charset=utf-8'
+          : (MIME[path.extname(finalPath).toLowerCase()] ?? 'application/octet-stream')
       res.writeHead(200, { 'Content-Type': type })
       fs.createReadStream(finalPath).pipe(res)
     })
