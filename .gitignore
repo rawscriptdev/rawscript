@@ -9,3 +9,4 @@ blob-report/
 benchmarks/results/
 out/
 dist/
+.rawscript/
