@@ -216,3 +216,72 @@ test.describe('cli typecheck', () => {
     }
   })
 })
+
+test.describe('cli build --local-deps (npm/pnpm are the dependency authority)', () => {
+  test.describe.configure({ mode: 'serial' })
+
+  let outDir: string
+  let server: ReturnType<typeof spawn> | null = null
+  let port: number
+
+  test.beforeAll(async ({}, testInfo) => {
+    port = 4341 + testInfo.workerIndex
+    outDir = mkdtempSync(path.join(tmpdir(), 'rawscript-cli-localdeps-e2e-'))
+    const cli = path.join(repoRoot, 'packages/cli/dist/cli.mjs')
+
+    const buildResult = spawnSync(
+      process.execPath,
+      [
+        cli,
+        'build',
+        '--entry',
+        path.join(repoRoot, 'tests/fixtures/local-deps/index.html'),
+        '--out',
+        outDir,
+        '--local-deps',
+      ],
+      { encoding: 'utf-8' }
+    )
+    expect(buildResult.status, buildResult.stderr ?? buildResult.stdout).toBe(0)
+
+    server = spawn(process.execPath, [cli, 'preview', '--dir', outDir, '--port', String(port)], {
+      cwd: repoRoot,
+      stdio: 'ignore',
+    })
+    await new Promise((resolve) => setTimeout(resolve, 1200))
+  })
+
+  test.afterAll(async () => {
+    if (server) {
+      server.kill()
+      await Promise.race([
+        new Promise((resolve) => server!.once('close', resolve)),
+        new Promise((resolve) => setTimeout(resolve, 3000)),
+      ])
+    }
+    if (outDir) rmSync(outDir, { recursive: true, force: true })
+  })
+
+  test('dependencies are bundled from node_modules; output has no importmap and no esm.sh', async ({
+    page,
+  }) => {
+    await page.goto(`http://127.0.0.1:${port}/`)
+    await expect(page.locator('#app')).toHaveText('hello from local dep: phase-b', {
+      timeout: 30_000,
+    })
+
+    const html = await page.goto(`http://127.0.0.1:${port}/`)
+    const body = (await html?.text()) ?? ''
+    expect(body).not.toContain('importmap')
+    expect(body).not.toContain('esm.sh')
+
+    const jsBody = await page.evaluate(() => fetch('/main.js').then((r) => r.text()))
+    expect(jsBody).toContain('hello from local dep')
+  })
+
+  test('preview --dir serves the production output directory', async ({ page }) => {
+    const resp = await page.request.get(`http://127.0.0.1:${port}/main.js`)
+    expect(resp.status()).toBe(200)
+    expect((await resp.text()).length).toBeGreaterThan(0)
+  })
+})
