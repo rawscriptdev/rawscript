@@ -284,4 +284,30 @@ test.describe('cli build --local-deps (npm/pnpm are the dependency authority)', 
     expect(resp.status()).toBe(200)
     expect((await resp.text()).length).toBeGreaterThan(0)
   })
+
+  test('an uninstalled dependency fails the build with an actionable install hint', () => {
+    const cli = path.join(repoRoot, 'packages/cli/dist/cli.mjs')
+    const out = mkdtempSync(path.join(tmpdir(), 'rawscript-cli-uninstalled-e2e-'))
+    try {
+      const result = spawnSync(
+        process.execPath,
+        [
+          cli,
+          'build',
+          '--entry',
+          path.join(repoRoot, 'tests/fixtures/local-deps-uninstalled/index.html'),
+          '--out',
+          out,
+          '--local-deps',
+        ],
+        { encoding: 'utf-8' }
+      )
+      expect(result.status, result.stderr ?? result.stdout).toBe(1)
+      expect(result.stderr).toContain('Could not resolve')
+      expect(result.stderr).toContain('npm install')
+      expect(existsSync(path.join(out, 'index.html'))).toBe(false)
+    } finally {
+      rmSync(out, { recursive: true, force: true })
+    }
+  })
 })
