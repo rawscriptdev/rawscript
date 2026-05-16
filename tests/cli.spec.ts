@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test'
 import { spawn, spawnSync } from 'node:child_process'
-import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 
@@ -306,6 +306,72 @@ test.describe('cli build --local-deps (npm/pnpm are the dependency authority)', 
       expect(result.stderr).toContain('Could not resolve')
       expect(result.stderr).toContain('npm install')
       expect(existsSync(path.join(out, 'index.html'))).toBe(false)
+    } finally {
+      rmSync(out, { recursive: true, force: true })
+    }
+  })
+})
+
+test.describe('cli deps (browser import map for local dependencies)', () => {
+  test('bundles locally installed dependencies and generates an import map', () => {
+    const cli = path.join(repoRoot, 'packages/cli/dist/cli.mjs')
+    const outDir = mkdtempSync(path.join(tmpdir(), 'rawscript-cli-deps-e2e-'))
+    try {
+      const result = spawnSync(
+        process.execPath,
+        [
+          cli,
+          'deps',
+          '--entry',
+          path.join(repoRoot, 'tests/fixtures/local-deps/index.html'),
+          '--out',
+          path.join(outDir, '.rawscript/deps'),
+        ],
+        { encoding: 'utf-8' }
+      )
+      expect(result.status, result.stderr ?? result.stdout).toBe(0)
+      expect(result.stdout).toContain('importmap.json')
+      expect(result.stdout).toContain('script type="importmap"')
+
+      const map = JSON.parse(
+        readFileSync(path.join(outDir, '.rawscript/deps/importmap.json'), 'utf-8')
+      )
+      const expectedValue =
+        './' +
+        path
+          .relative(
+            path.join(repoRoot, 'tests/fixtures/local-deps'),
+            path.join(outDir, '.rawscript/deps/locallib.js')
+          )
+          .split(path.sep)
+          .join('/')
+      expect(map.imports['locallib']).toBe(expectedValue)
+
+      const bundle = readFileSync(path.join(outDir, '.rawscript/deps/locallib.js'), 'utf-8')
+      expect(bundle).toContain('hello from local dep')
+    } finally {
+      rmSync(outDir, { recursive: true, force: true })
+    }
+  })
+
+  test('fails with an install hint when node_modules is missing', () => {
+    const cli = path.join(repoRoot, 'packages/cli/dist/cli.mjs')
+    const out = mkdtempSync(path.join(tmpdir(), 'rawscript-cli-deps-missing-e2e-'))
+    try {
+      const result = spawnSync(
+        process.execPath,
+        [
+          cli,
+          'deps',
+          '--entry',
+          path.join(repoRoot, 'tests/fixtures/local-deps-uninstalled/index.html'),
+          '--out',
+          path.join(out, '.rawscript/deps'),
+        ],
+        { encoding: 'utf-8' }
+      )
+      expect(result.status, result.stderr ?? result.stdout).toBe(1)
+      expect(result.stderr).toContain('npm install')
     } finally {
       rmSync(out, { recursive: true, force: true })
     }
