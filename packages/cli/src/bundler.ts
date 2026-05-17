@@ -179,6 +179,9 @@ export async function collectExternalBareSpecifiers(
     platform: 'browser',
     target: 'es2022',
     packages: 'external',
+    // An output path must be configured for CSS imports to be analyzed;
+    // write:false guarantees nothing is written.
+    outdir: path.dirname(entryAbs),
     write: false,
     metafile: true,
     ...jsxConfig,
