@@ -270,10 +270,9 @@ test.describe('cli build --local-deps (npm/pnpm are the dependency authority)', 
       timeout: 30_000,
     })
 
-    const html = await page.goto(`http://127.0.0.1:${port}/`)
-    const body = (await html?.text()) ?? ''
-    expect(body).not.toContain('importmap')
-    expect(body).not.toContain('esm.sh')
+    const html = await page.evaluate(() => fetch('/').then((r) => r.text()))
+    expect(html).not.toContain('importmap')
+    expect(html).not.toContain('esm.sh')
 
     const jsBody = await page.evaluate(() => fetch('/main.js').then((r) => r.text()))
     expect(jsBody).toContain('hello from local dep')
