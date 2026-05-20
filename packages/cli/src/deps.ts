@@ -19,8 +19,6 @@
 import * as esbuild from 'esbuild'
 import * as fs from 'fs'
 import * as path from 'path'
-import { collectExternalBareSpecifiers, extractTsScriptPaths } from './bundler.js'
-import { readTsconfigInfo } from './tsconfig.js'
 
 const NODE_BUILTINS = new Set([
   'assert',
@@ -75,6 +73,8 @@ export async function generateDeps(entryPoint: string, outRel: string): Promise<
   }
 
   const entryDir = path.dirname(entryAbs)
+  const { collectExternalBareSpecifiers, extractTsScriptPaths } = await import('./bundler.js')
+  const { readTsconfigInfo } = await import('./tsconfig.js')
   const htmlContent = fs.readFileSync(entryAbs, 'utf-8')
   const tsScriptPaths = extractTsScriptPaths(htmlContent)
 
@@ -194,7 +194,7 @@ export async function generateDeps(entryPoint: string, outRel: string): Promise<
 }
 
 /** Import map value for a bundled file, relative to the project entry dir. */
-function importMapValue(entryDir: string, outFile: string): string {
+export function importMapValue(entryDir: string, outFile: string): string {
   const rel = path.relative(entryDir, outFile).split(path.sep).join('/')
   return './' + rel
 }
