@@ -93,6 +93,18 @@ npx rawscript serve               # static file server on :3000, no config
 npx rawscript typecheck           # type-check the project (noEmit), exit 1 on errors
 ```
 
+With `--local-deps`, npm/pnpm dependencies are bundled from the project's local `node_modules` instead of externalized: the production output then has no runtime CDN dependency, and dynamic imports are code-split into shared chunk files. npm/pnpm remain the dependency authority — run `npm install` / `pnpm install` first; a missing dependency fails the build with an actionable message instead of silently falling back to the CDN.
+
+```sh
+npx rawscript build --local-deps   # bundle deps from the local node_modules
+```
+
+`rawscript deps` runs the bundling step alone: it bundles the packages your project actually imports into browser-ready ESM and prints a standard browser import map (also written to `importmap.json`) that points bare specifiers at those local files — no CDN, no custom rewriting:
+
+```sh
+npx rawscript deps   # bundles to .rawscript/deps/ and prints the import map
+```
+
 **`build` and `typecheck` are deliberately different operations:**
 
 - `rawscript build` transpiles and bundles — it does **not** type-check. esbuild strips types without verifying them.
