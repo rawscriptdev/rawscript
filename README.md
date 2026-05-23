@@ -105,6 +105,14 @@ npx rawscript build --local-deps   # bundle deps from the local node_modules
 npx rawscript deps   # bundles to .rawscript/deps/ and prints the import map
 ```
 
+`rawscript preview` serves a production output directory exactly as it would be deployed — same MIME types, ETag / Last-Modified headers, and traversal guards as the dev server:
+
+```sh
+npx rawscript preview --dir dist --port 3000
+```
+
+Deployment notes: the output of `rawscript build` is fully static — host `dist/` on any static file server or CDN. In the default mode the importmap references esm.sh at runtime; in `--local-deps` mode the output is self-contained (no esm.sh, no rawscript). What `rawscript preview` serves is exactly what you deploy, so the preview round-trip doubles as a smoke test for the deployment.
+
 **`build` and `typecheck` are deliberately different operations:**
 
 - `rawscript build` transpiles and bundles — it does **not** type-check. esbuild strips types without verifying them.
