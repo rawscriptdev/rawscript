@@ -95,8 +95,8 @@ export async function build(
       platform: 'browser',
       target: 'es2022',
       minify,
-      metafile: true,
       write: false,
+      metafile: true,
       ...jsxConfig,
     }
 
@@ -117,8 +117,6 @@ export async function build(
     try {
       const result = await esbuild.build(options)
 
-      // In CDN mode the externalized specifiers become the esm.sh importmap;
-      // in --local-deps mode everything is bundled, so nothing is externalized.
       if (!localDeps) {
         for (const spec of collectExternalSpecifiers(result)) {
           externalSpecifiers.add(spec)
@@ -159,7 +157,10 @@ export async function build(
 
   writeOutputHtml(entryAbs, outAbs, htmlContent, tsScriptPaths, externalSpecifiers, cssLinks)
 
-  console.log(`✓ Build complete. Output in ${outDir}`)
+  const modeNote = localDeps
+    ? ' (local dependencies bundled — no runtime CDN dependency)'
+    : ''
+  console.log(`✓ Build complete. Output in ${outDir}${modeNote}`)
 }
 
 /**
@@ -208,7 +209,10 @@ function collectExternalSpecifiers(result: esbuild.BuildResult): Set<string> {
  * - module script srcs point at the bundled .js files
  * - the rawscript runtime tag is removed
  * - the entry's own stylesheet (bundled CSS) is linked
- * - an importmap mapping externalized npm packages to esm.sh is injected
+ * - in CDN mode an importmap mapping externalized npm packages to esm.sh is
+ *   injected (merged with any user-provided importmap, which takes
+ *   precedence); in --local-deps mode the user's importmap is preserved but
+ *   no esm.sh entries are added
  */
 function writeOutputHtml(
   entryAbs: string,
@@ -230,9 +234,23 @@ function writeOutputHtml(
     (match, prefix, src, suffix) => prefix + src.replace(/\.tsx?$/, '.js') + suffix
   )
 
-  const imports: Record<string, string> = {}
+  let userImports: Record<string, string> = {}
+  const existing = html.match(/<script[^>]*type=["']importmap["'][^>]*>([\s\S]*?)<\/script>/i)
+  if (existing) {
+    try {
+      const parsed = JSON.parse(existing[1])
+      userImports = parsed.imports ?? {}
+    } catch {
+      console.warn('Existing importmap in the entry HTML is malformed — ignoring it')
+    }
+    html = html.replace(existing[0], '')
+  }
+
+  const imports: Record<string, string> = { ...userImports }
   for (const spec of externalSpecifiers) {
-    imports[spec] = 'https://esm.sh/' + spec
+    if (!(spec in imports)) {
+      imports[spec] = 'https://esm.sh/' + spec
+    }
   }
 
   const cssTags = cssLinks.map((href) => `<link rel="stylesheet" href="${href}">`).join('\n')
@@ -253,7 +271,7 @@ function writeOutputHtml(
   console.log(`✓ Rewrote ${path.basename(entryAbs)} → ${path.relative(process.cwd(), outHtml)}`)
 }
 
-function extractTsScriptPaths(html: string): string[] {
+export function extractTsScriptPaths(html: string): string[] {
   const paths: string[] = []
   const regex = /<script[^>]*type=["']module["'][^>]*src=["']([^"']+\.(?:ts|tsx))["'][^>]*>/gi
   let match: RegExpMatchArray | null
