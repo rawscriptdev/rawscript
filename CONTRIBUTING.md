@@ -38,7 +38,7 @@ load, so the suite splits chromium+firefox (parallel) from webkit
 
 ```
 packages/runtime/   browser runtime: boot, service worker, transpiler, resolver, HMR, fallback
-packages/cli/       build + serve CLI (`rawscript build`, `rawscript serve`, `rawscript typecheck`)
+packages/cli/       build + serve CLI (`rawscript build`, `rawscript serve`, `rawscript typecheck`, `rawscript preview`, `rawscript deps`)
 examples/           framework examples used by the e2e suite
 scripts/            dev static server
 tests/              Playwright e2e (smoke, jsx, examples, cli, cache, tsconfig) + node:test units
@@ -57,6 +57,12 @@ tests/              Playwright e2e (smoke, jsx, examples, cli, cache, tsconfig) 
   meta state). Bump the transpiled/meta names when the cache schema or the
   SW protocol (`SW_PROTOCOL_VERSION` in `version.ts`) changes; a protocol
   bump makes the SW purge all `rawscript-*` caches on activation.
+- The CLI has two dependency modes: the default externalizes npm imports to
+  an esm.sh importmap, while `--local-deps` bundles them from the project's
+  local node_modules (and `rawscript deps` builds per-package bundles plus
+  an import map). npm/pnpm are the dependency authority — the CLI must never
+  download, resolve, or manage packages itself; missing dependencies are
+  build errors with install hints, never silent CDN fallbacks.
 - Version bumps: runtime and cli are published in lockstep from the same
   `v0.x.y` tag — update the version in all three `package.json` files,
   `packages/runtime/src/version.ts`, and (if the transpile output changes)
