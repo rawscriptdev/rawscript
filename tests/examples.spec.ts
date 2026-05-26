@@ -1,11 +1,25 @@
 import { test, expect } from '@playwright/test'
 
-const examples: Array<{ name: string; path: string; locator: string; text: string | null }> = [
+const examples: Array<{
+  name: string
+  path: string
+  locator: string
+  altLocator?: string
+  text: string | null
+}> = [
   { name: 'react', path: '/examples/react/', locator: 'h1', text: 'rawscript + React' },
   { name: 'preact', path: '/examples/preact/', locator: 'h1', text: 'rawscript + Preact' },
   { name: 'solid', path: '/examples/solid/', locator: 'h1', text: 'rawscript + Solid' },
   { name: 'vue', path: '/examples/vue/', locator: 'h1', text: 'rawscript + Vue' },
-  { name: 'three', path: '/examples/three/', locator: 'canvas', text: null },
+  {
+    name: 'three',
+    path: '/examples/three/',
+    locator: 'canvas',
+    // Headless environments without WebGL (e.g. CI Firefox) get a graceful
+    // fallback element instead of a rendering canvas.
+    altLocator: '#webgl-unavailable',
+    text: null,
+  },
 ]
 
 test.describe('framework examples render', () => {
@@ -16,10 +30,15 @@ test.describe('framework examples render', () => {
 
       await page.goto(ex.path)
 
+      let target = page.locator(ex.locator)
+      if (ex.altLocator) {
+        target = target.or(page.locator(ex.altLocator))
+      }
+
       if (ex.text) {
-        await expect(page.locator(ex.locator)).toHaveText(ex.text, { timeout: 60_000 })
+        await expect(target).toHaveText(ex.text, { timeout: 60_000 })
       } else {
-        await expect(page.locator(ex.locator)).toBeVisible({ timeout: 60_000 })
+        await expect(target).toBeVisible({ timeout: 60_000 })
       }
 
       // On the very first (uncontrolled) load the browser may attempt the
