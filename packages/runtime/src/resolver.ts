@@ -1,8 +1,12 @@
 /**
  * resolver.ts — bare import specifier rewriter
  *
- * Pure regex, zero dependencies. Rewrites bare specifiers to esm.sh CDN URLs.
- * Intentionally regex-based (not AST) — this is a documented architectural decision.
+ * Pure regex, zero dependencies. Rewrites bare specifiers to CDN URLs
+ * (esm.sh by default, overridable via window.rawscriptConfig.cdn.base; the
+ * fallback can be disabled entirely, in which case unmapped specifiers are
+ * left untouched and fail with the browser's own module-loader error — see
+ * rewriteImports). Intentionally regex-based (not AST) — this is a documented
+ * architectural decision.
  *
  * Strategy: string literals that are NOT in import position are blanked with
  * spaces (length-preserving) before the import regex runs, so text like
@@ -37,6 +41,17 @@ const ANY_IMPORT_RE =
   /\bfrom\s+(['"])([^'"]+)\1|import\s*\(\s*(['"])([^'"]+)\3\s*\)|import\s+(['"])([^'"]+)\5/g
 
 const ESM_SH = 'https://esm.sh/'
+
+/**
+ * CDN fallback options. `enabled:false` stops unmapped bare imports from
+ * being rewritten to a CDN at all, so a restricted network never silently
+ * hits a third-party host; such imports are left untouched and fail with
+ * the browser's own module-loader error.
+ */
+export interface CdnOptions {
+  enabled: boolean
+  base: string
+}
 
 /** Matches complete (outermost) string literals, honoring backslash escapes. */
 const STRING_RE = /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`/g
@@ -228,11 +243,14 @@ export function mapBareImports(
 export function rewriteImports(
   js: string,
   importmap?: Record<string, string>,
+  cdn: Partial<CdnOptions> = {},
 ): string {
   const map = importmap ?? {}
+  const cdnOptions: CdnOptions = { enabled: true, base: ESM_SH, ...cdn }
   return mapBareImports(js, (specifier) => {
     if (specifier in map) return null
-    return ESM_SH + specifier
+    if (!cdnOptions.enabled) return null
+    return cdnOptions.base + specifier
   })
 }
 
