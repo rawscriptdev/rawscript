@@ -54,7 +54,7 @@ export function fixForError(message: string): string {
       'optionally with jsxImportSource for Preact/Solid).'
     )
   }
-  if (/Could not resolve|not resolved/.test(message)) {
+  if (/Could not resolve|not resolved|not be resolved/.test(message)) {
     return (
       'A bare import could not be resolved. Add it to the importmap in your HTML ' +
       '(e.g. "react": "https://esm.sh/react@18.3.1"), or check that a relative path ' +
