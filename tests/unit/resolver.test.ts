@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { rewriteImports } from '../../packages/runtime/src/resolver.ts'
+import { rewriteImports, unresolvedImportUrl } from '../../packages/runtime/src/resolver.ts'
 
 const cases: Array<[string, string]> = [
   // bare specifiers → esm.sh
@@ -73,4 +73,41 @@ test('rewriteImports: multiple statements and line offsets preserved', () => {
 test('rewriteImports: only the specifier is replaced, never the quote or context', () => {
   const input = "import { x as y } from 'pkg-a'"
   assert.equal(rewriteImports(input), "import { x as y } from 'https://esm.sh/pkg-a'")
+})
+
+test('rewriteImports: cdn disabled rewrites unmapped specifiers to the unresolved path', () => {
+  const input = "import { a } from 'missing-pkg'"
+  assert.equal(
+    rewriteImports(input, {}, { enabled: false }),
+    "import { a } from '/__rawscript/unresolved/missing-pkg'"
+  )
+})
+
+test('rewriteImports: cdn disabled never touches importmap-mapped specifiers', () => {
+  const input = "import { a } from 'react'"
+  const map = { react: 'https://cdn.example.com/react.js' }
+  assert.equal(rewriteImports(input, map, { enabled: false }), input)
+})
+
+test('rewriteImports: cdn disabled still rewrites relative and URL specifiers untouched', () => {
+  const input = "import { a } from './local'\nimport { b } from 'https://x.example/y'"
+  assert.equal(rewriteImports(input, {}, { enabled: false }), input)
+})
+
+test('rewriteImports: cdn base override is honored', () => {
+  const input = "import { a } from 'pkg-a'"
+  assert.equal(
+    rewriteImports(input, {}, { base: 'https://cdn.example.com/' }),
+    "import { a } from 'https://cdn.example.com/pkg-a'"
+  )
+})
+
+test('rewriteImports: default cdn behavior is preserved when options are omitted', () => {
+  const input = "import { a } from 'pkg-a'"
+  assert.equal(rewriteImports(input, {}), "import { a } from 'https://esm.sh/pkg-a'")
+})
+
+test('unresolvedImportUrl encodes the specifier', () => {
+  assert.equal(unresolvedImportUrl('missing-pkg'), '/__rawscript/unresolved/missing-pkg')
+  assert.equal(unresolvedImportUrl('@scope/pkg'), '/__rawscript/unresolved/%40scope%2Fpkg')
 })
