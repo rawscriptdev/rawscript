@@ -34,7 +34,7 @@ export function extractErrorLocation(message: string): { line: number; column: n
 /** Map raw error text to a short WHAT/category label. */
 export function classifyError(message: string): string {
   if (/JSX|jsx/.test(message)) return 'JSX configuration error'
-  if (/Could not resolve|not resolved|does not provide an export/.test(message)) {
+  if (/Could not resolve|not resolved|not be resolved|does not provide an export/.test(message)) {
     return 'Module resolution error'
   }
   if (/Syntax error|Expected|Unexpected|Parse|Missing/.test(message)) return 'Syntax error'
