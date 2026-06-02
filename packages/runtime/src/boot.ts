@@ -25,6 +25,7 @@ import { DebugPanel } from './debugpanel.js'
 import { env } from './env.js'
 import { RAWSCRIPT_VERSION, SW_PROTOCOL_VERSION } from './version.js'
 import type { CompileDiagnostic } from './diagnostics.js'
+import { readConfig } from './config.js'
 
 const DEFAULT_SW_PATH = '/rawscript-sw.js'
 
@@ -74,6 +75,7 @@ function sendHandshake(sw: ServiceWorker): void {
       protocolVersion: SW_PROTOCOL_VERSION,
       rawscriptVersion: RAWSCRIPT_VERSION,
       importmap: imports,
+      config: readConfig(),
     },
     [channel.port2]
   )
