@@ -12,6 +12,8 @@
  *
  * The fallback is slower (no cross-load caching, main thread transpilation) and
  * logs a warning. It exists so rawscript works everywhere, not as a preferred path.
+ * It honors window.rawscriptConfig (self-hosted compiler, CDN on/off) like the
+ * Service Worker path does.
  */
 
 export async function runFallback(): Promise<void> {
@@ -28,6 +30,7 @@ export async function runFallback(): Promise<void> {
 
   const transpiler = await import('./transpiler.js')
   const resolver = await import('./resolver.js')
+  const config = (await import('./config.js')).readConfig()
 
   console.warn(
     'rawscript: Service Workers are unavailable — using the Blob URL fallback. Slower and no cross-load caching.'
@@ -54,14 +57,24 @@ export async function runFallback(): Promise<void> {
 
       let js: string
       try {
-        js = await transpiler.transpile(source, src)
+        js = await transpiler.transpile(source, src, {}, config)
       } catch (err) {
         console.error(`rawscript: fallback failed to transpile ${src}:`, err)
         if (scriptElement) scriptElement.style.display = 'none'
         return null
       }
 
-      const rewritten = resolver.rewriteImports(js, importmap)
+      const rewritten = resolver.rewriteImports(js, importmap, config.cdn)
+      if (config.cdn?.enabled === false) {
+        // CDN fallback disabled: report unmapped bare specifiers so the page
+        // author sees exactly what needs an import map entry. They are left
+        // in place — the browser's own module loader surfaces the error.
+        for (const spec of resolver.collectImportSpecifiers(source)) {
+          if (!(spec in importmap) && !spec.startsWith('./') && !spec.startsWith('../')) {
+            console.warn(`rawscript: "${spec}" has no import map entry and CDN fallback is disabled`, src)
+          }
+        }
+      }
       const resolved = await resolveRelativeImports(rewritten, src, processFile)
 
       const blob = new Blob([resolved], { type: 'application/javascript; charset=utf-8' })
