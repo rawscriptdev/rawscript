@@ -28,6 +28,10 @@ test('classifyError: resolution errors get the resolution category', () => {
     classifyError('main.ts:1:20: ERROR: Could not resolve "not-a-package"'),
     'Module resolution error'
   )
+  assert.equal(
+    classifyError('could not be resolved: no import map entry and CDN fallback is disabled'),
+    'Module resolution error'
+  )
 })
 
 test('classifyError: syntax errors get the syntax category', () => {
