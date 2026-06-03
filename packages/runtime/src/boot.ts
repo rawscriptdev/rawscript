@@ -143,6 +143,15 @@ async function main(): Promise<void> {
     return
   }
 
+  if (!registration) {
+    // Some environments resolve registration with no registration object
+    // (e.g. Service Workers blocked by policy). Fall back instead of crashing.
+    console.warn('rawscript: Service Worker registration returned no registration, using Blob URL fallback.')
+    hideLoadingIndicator()
+    runFallback()
+    return
+  }
+
   if (registration.active && !navigator.serviceWorker.controller) {
     // First load: the SW just (re)installed but does not control this page yet.
     // Reload once so all subsequent requests are intercepted and transpiled.
