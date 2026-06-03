@@ -4,6 +4,42 @@ export const WASM_URL = 'https://unpkg.com/esbuild-wasm@0.20.2/esbuild.wasm'
 export const WASM_CACHE = 'rawscript-wasm-v1'
 export const ESBUILD_VERSION = /esbuild-wasm@([^/]+)\//.exec(WASM_URL)?.[1] ?? 'unknown'
 
+/** Runtime surface of the esbuild-wasm shim (any URL, see config.ts). */
+export interface EsbuildApi {
+  initialize(options?: {
+    wasmURL?: string | URL
+    wasmModule?: WebAssembly.Module
+    worker?: boolean
+    [key: string]: unknown
+  }): Promise<void>
+  transform(
+    input: string | Uint8Array,
+    options?: Record<string, unknown>
+  ): Promise<{ code: string; map?: string }>
+  version: string
+}
+
+/**
+ * The page bundle (IIFE, iife) must never contain a static import of the
+ * esbuild-wasm shim — esbuild rewrites static external imports in IIFE
+ * bundles to a `__require` call that throws in browsers. The main thread
+ * therefore loads its shim with a dynamic import() of the shim URL, which
+ * esbuild leaves intact. The Service Worker (ESM bundle) keeps its static
+ * import until the SW-specific split lands.
+ */
+const esbuildModules = new Map<string, Promise<EsbuildApi>>()
+
+export async function loadShim(): Promise<EsbuildApi> {
+  const url = 'https://unpkg.com/esbuild-wasm@0.20.2/esm/browser.js'
+  let pending = esbuildModules.get(url)
+  if (!pending) {
+    pending = import(url) as Promise<EsbuildApi>
+    esbuildModules.set(url, pending)
+    pending.catch(() => esbuildModules.delete(url))
+  }
+  return pending
+}
+
 let initPromise: Promise<void> | null = null
 
 /**
@@ -62,9 +98,10 @@ export async function transpile(
   filename: string,
   jsxConfig: JsxConfig = {}
 ): Promise<string> {
+  const shim = await loadShim()
   await ensureInitialized()
   const loader = filename.endsWith('.tsx') ? 'tsx' : 'ts'
-  const result = await esbuild.transform(source, {
+  const result = await shim.transform(source, {
     loader,
     format: 'esm',
     target: 'esnext',
