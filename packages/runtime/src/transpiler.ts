@@ -40,7 +40,12 @@ export async function loadShim(): Promise<EsbuildApi> {
   return pending
 }
 
-let initPromise: Promise<void> | null = null
+/**
+ * esbuild-wasm allows exactly one initialize() per module instance. Track
+ * per-shim initialization state so a shim is initialized at most once, even
+ * when several compilations run concurrently.
+ */
+const initState = new Map<EsbuildApi, { promise: Promise<void>; wasmUrl: string }>()
 
 /**
  * Prefer the WASM binary pre-cached by the SW's install handler. In the SW
@@ -74,15 +79,20 @@ async function initializeFromCache(): Promise<boolean> {
   }
 }
 
-async function ensureInitialized(): Promise<void> {
-  if (!initPromise) {
-    initPromise = (async () => {
-      if (!(await initializeFromCache())) {
-        await esbuild.initialize({ wasmURL: WASM_URL, worker: false })
-      }
-    })()
-  }
-  await initPromise
+async function ensureInitialized(shim: EsbuildApi): Promise<void> {
+  const existing = initState.get(shim)
+  if (existing) return existing.promise
+  const promise = (async () => {
+    if (!(await initializeFromCache())) {
+      await shim.initialize({ wasmURL: WASM_URL, worker: false })
+    }
+  })().catch((err) => {
+    // A failed load must not permanently poison init for this shim.
+    initState.delete(shim)
+    throw err
+  })
+  initState.set(shim, { promise, wasmUrl: WASM_URL })
+  return promise
 }
 
 export interface JsxConfig {
@@ -99,7 +109,7 @@ export async function transpile(
   jsxConfig: JsxConfig = {}
 ): Promise<string> {
   const shim = await loadShim()
-  await ensureInitialized()
+  await ensureInitialized(shim)
   const loader = filename.endsWith('.tsx') ? 'tsx' : 'ts'
   const result = await shim.transform(source, {
     loader,
