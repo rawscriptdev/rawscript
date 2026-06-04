@@ -1,6 +1,7 @@
-import * as esbuild from 'https://unpkg.com/esbuild-wasm@0.20.2/esm/browser.js'
+import type { RawscriptConfig } from './config.js'
+import { DEFAULT_ESBUILD_URL, DEFAULT_WASM_URL } from './config.js'
 
-export const WASM_URL = 'https://unpkg.com/esbuild-wasm@0.20.2/esbuild.wasm'
+export const WASM_URL = DEFAULT_WASM_URL
 export const WASM_CACHE = 'rawscript-wasm-v1'
 export const ESBUILD_VERSION = /esbuild-wasm@([^/]+)\//.exec(WASM_URL)?.[1] ?? 'unknown'
 
@@ -23,14 +24,14 @@ export interface EsbuildApi {
  * The page bundle (IIFE, iife) must never contain a static import of the
  * esbuild-wasm shim — esbuild rewrites static external imports in IIFE
  * bundles to a `__require` call that throws in browsers. The main thread
- * therefore loads its shim with a dynamic import() of the shim URL, which
- * esbuild leaves intact. The Service Worker (ESM bundle) keeps its static
- * import until the SW-specific split lands.
+ * therefore loads its shim with a dynamic import() of the configured shim
+ * URL, which esbuild leaves intact. The Service Worker (ESM bundle) keeps
+ * its static import until the SW-specific split lands.
  */
 const esbuildModules = new Map<string, Promise<EsbuildApi>>()
 
-export async function loadShim(): Promise<EsbuildApi> {
-  const url = 'https://unpkg.com/esbuild-wasm@0.20.2/esm/browser.js'
+export async function loadShim(config?: RawscriptConfig): Promise<EsbuildApi> {
+  const url = config?.esbuildUrl ?? DEFAULT_ESBUILD_URL
   let pending = esbuildModules.get(url)
   if (!pending) {
     pending = import(url) as Promise<EsbuildApi>
@@ -40,10 +41,15 @@ export async function loadShim(): Promise<EsbuildApi> {
   return pending
 }
 
+function effectiveWasmUrl(config?: RawscriptConfig): string {
+  return config?.wasmUrl ?? DEFAULT_WASM_URL
+}
+
 /**
  * esbuild-wasm allows exactly one initialize() per module instance. Track
- * per-shim initialization state so a shim is initialized at most once, even
- * when several compilations run concurrently.
+ * per-shim initialization state so a shim is initialized at most once with
+ * the first-seen effective WASM URL; if the configuration changes within a
+ * page life, the shim keeps its first initialization and a warning is logged.
  */
 const initState = new Map<EsbuildApi, { promise: Promise<void>; wasmUrl: string }>()
 
@@ -51,27 +57,38 @@ const initState = new Map<EsbuildApi, { promise: Promise<void>; wasmUrl: string 
  * Prefer the WASM binary pre-cached by the SW's install handler. In the SW
  * context `URL.createObjectURL` is unavailable, so the cached bytes are
  * compiled directly and handed to esbuild as a WebAssembly.Module. This means
- * re-initialization never hits the network. Falls back to the CDN URL when no
- * cache exists (main-thread fallback path, first SW run).
+ * re-initialization never hits the network.
  *
- * Corrupt-cache recovery (roadmap section 14): any failure to compile or
- * initialize the cached WASM deletes the entry so the next boot refetches it
- * instead of being permanently trapped by a bad cache.
+ * On a cache miss the binary is fetched and STORED, so a configured
+ * self-hosted compiler is offline-ready after its first compile. Any failure
+ * to compile or initialize the cached WASM deletes the entry so the next
+ * boot refetches it instead of being permanently trapped by a bad cache
+ * (corrupt-cache recovery, roadmap section 14).
  */
-async function initializeFromCache(): Promise<boolean> {
+async function initializeFromCache(esbuild: EsbuildApi, wasmUrl: string): Promise<boolean> {
   if (typeof caches === 'undefined') return false
   let cache: Cache | null = null
   try {
     cache = await caches.open(WASM_CACHE)
-    const cached = await cache.match(WASM_URL)
-    if (!cached) return false
+    let cached = await cache.match(wasmUrl)
+    if (!cached) {
+      const response = await fetch(wasmUrl)
+      if (!response.ok) return false
+      const bytes = await response.arrayBuffer()
+      try {
+        await cache.put(wasmUrl, new Response(bytes, { headers: { 'Content-Type': 'application/wasm' } }))
+      } catch {
+        // cache write is best-effort; the compiled module below still works
+      }
+      cached = new Response(bytes, { headers: { 'Content-Type': 'application/wasm' } })
+    }
     const module = await WebAssembly.compile(await cached.arrayBuffer())
     await esbuild.initialize({ wasmModule: module, worker: false })
     return true
   } catch (err) {
     console.warn('rawscript: failed to initialize esbuild from cached WASM, deleting entry and falling back to network', err)
     try {
-      await cache?.delete(WASM_URL)
+      await cache?.delete(wasmUrl)
     } catch {
       // cache cleanup is best-effort
     }
@@ -79,19 +96,27 @@ async function initializeFromCache(): Promise<boolean> {
   }
 }
 
-async function ensureInitialized(shim: EsbuildApi): Promise<void> {
+async function ensureInitialized(shim: EsbuildApi, config?: RawscriptConfig): Promise<void> {
+  const wasmUrl = effectiveWasmUrl(config)
   const existing = initState.get(shim)
-  if (existing) return existing.promise
+  if (existing && existing.wasmUrl === wasmUrl) return existing.promise
+  if (existing && existing.wasmUrl !== wasmUrl) {
+    console.warn(
+      `rawscript: compiler WASM URL changed mid-life (${existing.wasmUrl} → ${wasmUrl}); ` +
+        'keeping the first initialization until the next page load'
+    )
+    return existing.promise
+  }
   const promise = (async () => {
-    if (!(await initializeFromCache())) {
-      await shim.initialize({ wasmURL: WASM_URL, worker: false })
+    if (!(await initializeFromCache(shim, wasmUrl))) {
+      await shim.initialize({ wasmURL: wasmUrl, worker: false })
     }
   })().catch((err) => {
     // A failed load must not permanently poison init for this shim.
     initState.delete(shim)
     throw err
   })
-  initState.set(shim, { promise, wasmUrl: WASM_URL })
+  initState.set(shim, { promise, wasmUrl })
   return promise
 }
 
@@ -106,10 +131,11 @@ export interface JsxConfig {
 export async function transpile(
   source: string,
   filename: string,
-  jsxConfig: JsxConfig = {}
+  jsxConfig: JsxConfig = {},
+  config?: RawscriptConfig
 ): Promise<string> {
-  const shim = await loadShim()
-  await ensureInitialized(shim)
+  const shim = await loadShim(config)
+  await ensureInitialized(shim, config)
   const loader = filename.endsWith('.tsx') ? 'tsx' : 'ts'
   const result = await shim.transform(source, {
     loader,
