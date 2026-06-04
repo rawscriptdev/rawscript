@@ -21,12 +21,17 @@ export interface EsbuildApi {
 }
 
 /**
- * The page bundle (IIFE, iife) must never contain a static import of the
- * esbuild-wasm shim — esbuild rewrites static external imports in IIFE
- * bundles to a `__require` call that throws in browsers. The main thread
- * therefore loads its shim with a dynamic import() of the configured shim
- * URL, which esbuild leaves intact. The Service Worker (ESM bundle) keeps
- * its static import until the SW-specific split lands.
+ * Shim loading is deliberately split from transpilation so the page bundle
+ * (IIFE, iife) never contains a static import of the esbuild-wasm shim —
+ * esbuild rewrites static external imports in IIFE bundles to a `__require`
+ * call that throws in browsers. Instead:
+ *
+ * - The Service Worker (ESM bundle) statically imports its shim and passes
+ *   it to transpileWith(). The default unpkg shim is baked into the SW; a
+ *   self-hosted deployment patches that import via `rawscript vendor`.
+ * - The main thread (Blob URL fallback) loads its shim with a dynamic
+ *   import() of a runtime-computed URL, which esbuild leaves intact, honoring
+ *   `window.rawscriptConfig.esbuildUrl` (roadmap section 19).
  */
 const esbuildModules = new Map<string, Promise<EsbuildApi>>()
 
@@ -46,17 +51,10 @@ function effectiveWasmUrl(config?: RawscriptConfig): string {
 }
 
 /**
- * esbuild-wasm allows exactly one initialize() per module instance. Track
- * per-shim initialization state so a shim is initialized at most once with
- * the first-seen effective WASM URL; if the configuration changes within a
- * page life, the shim keeps its first initialization and a warning is logged.
- */
-const initState = new Map<EsbuildApi, { promise: Promise<void>; wasmUrl: string }>()
-
-/**
- * Prefer the WASM binary pre-cached by the SW's install handler. In the SW
- * context `URL.createObjectURL` is unavailable, so the cached bytes are
- * compiled directly and handed to esbuild as a WebAssembly.Module. This means
+ * Prefer the WASM binary pre-cached by the SW's install handler (or a
+ * previous boot) for the effective WASM URL. In the SW context
+ * `URL.createObjectURL` is unavailable, so the cached bytes are compiled
+ * directly and handed to esbuild as a WebAssembly.Module. This means
  * re-initialization never hits the network.
  *
  * On a cache miss the binary is fetched and STORED, so a configured
@@ -95,6 +93,15 @@ async function initializeFromCache(esbuild: EsbuildApi, wasmUrl: string): Promis
     return false
   }
 }
+
+/**
+ * esbuild-wasm allows exactly one initialize() per module instance. Each
+ * shim instance is initialized at most once with the first-seen effective
+ * WASM URL; if the configuration changes within a page life, the shim module
+ * keeps the first initialization and a warning is logged (changing the
+ * compiler mid-life is a development-only scenario).
+ */
+const initState = new Map<EsbuildApi, { promise: Promise<void>; wasmUrl: string }>()
 
 async function ensureInitialized(shim: EsbuildApi, config?: RawscriptConfig): Promise<void> {
   const wasmUrl = effectiveWasmUrl(config)
