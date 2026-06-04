@@ -128,6 +128,24 @@ export interface JsxConfig {
   jsxDev?: boolean
 }
 
+function runTransform(
+  shim: EsbuildApi,
+  source: string,
+  filename: string,
+  jsxConfig: JsxConfig
+): Promise<string> {
+  const loader = filename.endsWith('.tsx') ? 'tsx' : 'ts'
+  return shim.transform(source, {
+    loader,
+    format: 'esm',
+    target: 'esnext',
+    sourcefile: filename,
+    sourcemap: 'inline',
+    ...jsxConfig,
+  }).then((result) => result.code)
+}
+
+/** Main-thread path (Blob URL fallback): loads the configured shim itself. */
 export async function transpile(
   source: string,
   filename: string,
@@ -136,14 +154,17 @@ export async function transpile(
 ): Promise<string> {
   const shim = await loadShim(config)
   await ensureInitialized(shim, config)
-  const loader = filename.endsWith('.tsx') ? 'tsx' : 'ts'
-  const result = await shim.transform(source, {
-    loader,
-    format: 'esm',
-    target: 'esnext',
-    sourcefile: filename,
-    sourcemap: 'inline',
-    ...jsxConfig,
-  })
-  return result.code
+  return runTransform(shim, source, filename, jsxConfig)
+}
+
+/** Service Worker path: the SW provides its statically imported shim. */
+export async function transpileWith(
+  shim: EsbuildApi,
+  source: string,
+  filename: string,
+  jsxConfig: JsxConfig = {},
+  config?: RawscriptConfig
+): Promise<string> {
+  await ensureInitialized(shim, config)
+  return runTransform(shim, source, filename, jsxConfig)
 }
