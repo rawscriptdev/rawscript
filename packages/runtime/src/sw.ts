@@ -21,7 +21,8 @@ declare const self: ServiceWorkerGlobalScope
 
 import { transpileWith, WASM_URL, WASM_CACHE, ESBUILD_VERSION, type JsxConfig, type EsbuildApi } from './transpiler.js'
 import * as esbuild from 'https://unpkg.com/esbuild-wasm@0.20.2/esm/browser.js'
-import { rewriteImports, mapBareImports, collectImportSpecifiers } from './resolver.js'
+import { rewriteImports, UNRESOLVED_PREFIX, mapBareImports, collectImportSpecifiers } from './resolver.js'
+import type { RawscriptConfig } from './config.js'
 import { fnv1a } from './hash.js'
 import { RAWSCRIPT_VERSION, SW_PROTOCOL_VERSION } from './version.js'
 import { buildCompileDiagnostic, type CompileDiagnostic } from './diagnostics.js'
@@ -43,6 +44,7 @@ const TARGET = 'esnext'
 const FORMAT = 'esm'
 
 let knownImportmap: Record<string, string> = {}
+let knownConfig: RawscriptConfig | null = null
 let configState: { tsconfig: TsConfig | null; at: number } | null = null
 const CONFIG_TTL_MS = 5000
 
@@ -128,6 +130,7 @@ self.addEventListener('message', (event: ExtendableMessageEvent) => {
   if (!data || typeof data !== 'object') return
   if (data.type === 'HANDSHAKE') {
     knownImportmap = data.importmap ?? {}
+    knownConfig = data.config ?? null
     event.ports?.[0]?.postMessage({
       type: 'SW_READY',
       protocolVersion: SW_PROTOCOL_VERSION,
@@ -303,9 +306,30 @@ async function handleFetch(event: FetchEvent): Promise<Response> {
       esbuild as unknown as EsbuildApi,
       toTranspile,
       url.pathname,
-      jsxConfig
+      jsxConfig,
+      knownConfig ?? undefined
     )
-    const rewritten = rewriteImports(js, knownImportmap)
+    const rewritten = rewriteImports(js, knownImportmap, knownConfig?.cdn)
+
+    // A module that references an unresolvable bare import must fail loudly
+    // with a structured diagnostic instead of surfacing as a 404'd module
+    // request the page cannot explain.
+    const unresolved = findUnresolvedImports(rewritten)
+    if (unresolved.length > 0) {
+      const message =
+        `import "${unresolved[0]}" could not be resolved` +
+        (knownConfig?.cdn?.enabled === false
+          ? ' because CDN fallback is disabled; add it to the import map'
+          : ' by the CDN; add it to the import map')
+      const diagnostic = buildCompileDiagnostic({
+        file: url.pathname,
+        message,
+        source,
+        chain: getImportChain(url.pathname),
+      })
+      notifyClient({ type: 'TRANSPILE_ERROR', ...diagnostic })
+      return transpileErrorResponse(diagnostic)
+    }
 
     const out = new Response(rewritten, {
       headers: {
@@ -391,6 +415,26 @@ function isDependencyRequest(request: Request): boolean {
   const url = new URL(request.url)
   if (url.pathname.endsWith('.ts') || url.pathname.endsWith('.tsx')) return false
   return url.origin !== self.location.origin
+}
+
+/**
+ * Collect bare specifiers that were rewritten to the unresolved prefix. The
+ * prefix is URL-escaped in the rewritten output, so specifiers are restored
+ * via decodeURIComponent.
+ */
+function findUnresolvedImports(rewritten: string): string[] {
+  const specifiers: string[] = []
+  const escaped = UNRESOLVED_PREFIX.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const re = new RegExp(escaped + "([^'\"`]+)", 'g')
+  let match: RegExpExecArray | null
+  while ((match = re.exec(rewritten)) !== null) {
+    try {
+      specifiers.push(decodeURIComponent(match[1]))
+    } catch {
+      specifiers.push(match[1])
+    }
+  }
+  return specifiers
 }
 
 /**
