@@ -23,6 +23,7 @@ import { transpileWith, WASM_URL, WASM_CACHE, ESBUILD_VERSION, type JsxConfig, t
 import * as esbuild from 'https://unpkg.com/esbuild-wasm@0.20.2/esm/browser.js'
 import { rewriteImports, UNRESOLVED_PREFIX, mapBareImports, collectImportSpecifiers } from './resolver.js'
 import type { RawscriptConfig } from './config.js'
+import { DEFAULT_ESBUILD_URL, DEFAULT_WASM_URL } from './config.js'
 import { fnv1a } from './hash.js'
 import { RAWSCRIPT_VERSION, SW_PROTOCOL_VERSION } from './version.js'
 import { buildCompileDiagnostic, type CompileDiagnostic } from './diagnostics.js'
@@ -269,6 +270,11 @@ async function handleFetch(event: FetchEvent): Promise<Response> {
       rawscript: RAWSCRIPT_VERSION,
       target: TARGET,
       format: FORMAT,
+      // Configuration-aware: a changed CDN base, disabled CDN fallback, or a
+      // different shim/WASM URL must never reuse compiled output.
+      cdn: knownConfig?.cdn ?? {},
+      esbuildUrl: knownConfig?.esbuildUrl ?? DEFAULT_ESBUILD_URL,
+      wasmUrl: knownConfig?.wasmUrl ?? DEFAULT_WASM_URL,
     })
   )
 
@@ -408,13 +414,16 @@ function notifyClient(data: Record<string, unknown>): void {
 
 /**
  * A request is a dependency (eligible for the dependency cache) when it is a
- * cross-origin GET. TS sources and the HTML document are never dependencies —
- * they go through the transpile/fallback pipeline instead.
+ * cross-origin GET, or a same-origin GET whose URL is an import map value —
+ * a project's own vendored modules behave exactly like CDN dependencies.
+ * TS sources and the HTML document are never dependencies — they go through
+ * the transpile/fallback pipeline instead.
  */
 function isDependencyRequest(request: Request): boolean {
   const url = new URL(request.url)
   if (url.pathname.endsWith('.ts') || url.pathname.endsWith('.tsx')) return false
-  return url.origin !== self.location.origin
+  if (url.origin !== self.location.origin) return true
+  return Object.values(knownImportmap).some((value) => value === url.href)
 }
 
 /**
