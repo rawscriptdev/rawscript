@@ -1,7 +1,7 @@
 /**
  * sw.ts — Service Worker: lifecycle, versioned update protocol, WASM
  * pre-cache, content-aware transpiled-output cache, import rewriting,
- * structured diagnostics.
+ * dependency cache, structured diagnostics.
  *
  * Cache correctness (roadmap section 12): the cache key is a fingerprint of
  * source content + JSX configuration + importmap + tsconfig + compiler
@@ -19,7 +19,8 @@
  */
 declare const self: ServiceWorkerGlobalScope
 
-import { transpile, WASM_URL, WASM_CACHE, ESBUILD_VERSION, type JsxConfig } from './transpiler.js'
+import { transpileWith, WASM_URL, WASM_CACHE, ESBUILD_VERSION, type JsxConfig, type EsbuildApi } from './transpiler.js'
+import * as esbuild from 'https://unpkg.com/esbuild-wasm@0.20.2/esm/browser.js'
 import { rewriteImports, mapBareImports, collectImportSpecifiers } from './resolver.js'
 import { fnv1a } from './hash.js'
 import { RAWSCRIPT_VERSION, SW_PROTOCOL_VERSION } from './version.js'
@@ -34,6 +35,7 @@ import {
 
 const TRANSPILED_CACHE = 'rawscript-transpiled-v2'
 const META_CACHE = 'rawscript-meta-v1'
+const DEPENDENCY_CACHE = 'rawscript-deps-v1'
 const META_KEY = 'rawscript://meta'
 const FINGERPRINT_HEADER = 'x-rawscript-fingerprint'
 const BODY_HASH_HEADER = 'x-rawscript-body-hash'
@@ -199,9 +201,31 @@ async function getTsconfigState(pathname: string): Promise<{ tsconfig: TsConfig 
 
 async function handleFetch(event: FetchEvent): Promise<Response> {
   const url = new URL(event.request.url)
+  const isGet = event.request.method === 'GET'
+
+  // Dependency cache: cross-origin requests — typically CDN modules such as
+  // esm.sh — are cache-first. A served copy keeps offline reloads of an
+  // already-loaded module graph working. Same-origin TS sources and the HTML
+  // document fall through to normal handling.
+  if (isGet && isDependencyRequest(event.request)) {
+    const depsCache = await caches.open(DEPENDENCY_CACHE)
+    const cachedDep = await depsCache.match(event.request)
+    if (cachedDep) return cachedDep
+    const depResponse = await fetch(event.request)
+    if (depResponse.ok) {
+      try {
+        await depsCache.put(event.request, depResponse.clone())
+      } catch (err) {
+        // Quota/write failure is non-fatal: the dependency simply is not
+        // cached this time.
+        console.warn('rawscript: failed to cache dependency', event.request.url, err)
+      }
+    }
+    return depResponse
+  }
 
   const isTs =
-    event.request.method === 'GET' &&
+    isGet &&
     (url.pathname.endsWith('.ts') || url.pathname.endsWith('.tsx'))
 
   if (!isTs) return fetch(event.request)
@@ -275,7 +299,12 @@ async function handleFetch(event: FetchEvent): Promise<Response> {
     // failing module's importers are already known when its error is raised.
     recordModuleGraph(url.pathname, source)
 
-    const js = await transpile(toTranspile, url.pathname, jsxConfig)
+    const js = await transpileWith(
+      esbuild as unknown as EsbuildApi,
+      toTranspile,
+      url.pathname,
+      jsxConfig
+    )
     const rewritten = rewriteImports(js, knownImportmap)
 
     const out = new Response(rewritten, {
@@ -351,6 +380,17 @@ function notifyClient(data: Record<string, unknown>): void {
       client.postMessage(data)
     }
   })
+}
+
+/**
+ * A request is a dependency (eligible for the dependency cache) when it is a
+ * cross-origin GET. TS sources and the HTML document are never dependencies —
+ * they go through the transpile/fallback pipeline instead.
+ */
+function isDependencyRequest(request: Request): boolean {
+  const url = new URL(request.url)
+  if (url.pathname.endsWith('.ts') || url.pathname.endsWith('.tsx')) return false
+  return url.origin !== self.location.origin
 }
 
 /**
