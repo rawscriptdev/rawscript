@@ -5,8 +5,9 @@
  *
  * Cache correctness (roadmap section 12): the cache key is a fingerprint of
  * source content + JSX configuration + importmap + tsconfig + compiler
- * version + rawscript version + transform options. Changing any of those
- * never reuses incompatible compiled output.
+ * version + compiler/esbuild shim URL + CDN configuration + rawscript
+ * version + transform options. Changing any of those never reuses
+ * incompatible compiled output.
  *
  * Corrupt-cache recovery (roadmap section 14): a cached body is verified
  * against a stored content hash on every hit; a failed cache write never
@@ -21,9 +22,9 @@ declare const self: ServiceWorkerGlobalScope
 
 import { transpileWith, WASM_URL, WASM_CACHE, ESBUILD_VERSION, type JsxConfig, type EsbuildApi } from './transpiler.js'
 import * as esbuild from 'https://unpkg.com/esbuild-wasm@0.20.2/esm/browser.js'
-import { rewriteImports, UNRESOLVED_PREFIX, mapBareImports, collectImportSpecifiers } from './resolver.js'
+import { DEFAULT_ESBUILD_URL } from './config.js'
+import { rewriteImports, mapBareImports, collectImportSpecifiers, UNRESOLVED_PREFIX } from './resolver.js'
 import type { RawscriptConfig } from './config.js'
-import { DEFAULT_ESBUILD_URL, DEFAULT_WASM_URL } from './config.js'
 import { fnv1a } from './hash.js'
 import { RAWSCRIPT_VERSION, SW_PROTOCOL_VERSION } from './version.js'
 import { buildCompileDiagnostic, type CompileDiagnostic } from './diagnostics.js'
@@ -45,7 +46,7 @@ const TARGET = 'esnext'
 const FORMAT = 'esm'
 
 let knownImportmap: Record<string, string> = {}
-let knownConfig: RawscriptConfig | null = null
+let knownConfig: RawscriptConfig = {}
 let configState: { tsconfig: TsConfig | null; at: number } | null = null
 const CONFIG_TTL_MS = 5000
 
@@ -55,16 +56,23 @@ const moduleGraph = new Map<string, string>()
 self.addEventListener('install', (event) => {
   // Never fail installation because the WASM pre-cache is unreachable — it
   // will simply be fetched on demand (transpiler.initializeFromCache).
-  // The default compiler shim URL is pre-warmed in the HTTP cache too so the
-  // first compile never waits on a cold CDN fetch.
   event.waitUntil(
-    caches
-      .open(WASM_CACHE)
-      .then((cache) => cache.add(WASM_URL))
-      .then(() => fetch(DEFAULT_ESBUILD_URL, { cache: 'force-cache' }))
-      .catch((err) =>
-        console.warn('rawscript: WASM pre-cache failed; it will be fetched on demand', err)
-      )
+    Promise.all([
+      caches
+        .open(WASM_CACHE)
+        .then((cache) => cache.add(WASM_URL))
+        .catch((err) =>
+          console.warn('rawscript: WASM pre-cache failed; it will be fetched on demand', err)
+        ),
+      // Warm the browser HTTP cache for the default esbuild-wasm shim so an
+      // offline reload can re-import it without the network. (Cache Storage
+      // does not feed dynamic import(); the HTTP cache does.)
+      fetch(DEFAULT_ESBUILD_URL)
+        .then((response) => response.arrayBuffer())
+        .catch((err) =>
+          console.warn('rawscript: esbuild shim pre-warm failed; it will be fetched on demand', err)
+        ),
+    ])
   )
   self.skipWaiting()
 })
@@ -91,7 +99,13 @@ async function activate(): Promise<void> {
     // install handler just pre-cached.
     await Promise.all(
       names
-        .filter((name) => name !== WASM_CACHE && name !== TRANSPILED_CACHE && name !== META_CACHE)
+        .filter(
+          (name) =>
+            name !== WASM_CACHE &&
+            name !== TRANSPILED_CACHE &&
+            name !== META_CACHE &&
+            name !== DEPENDENCY_CACHE
+        )
         .map((name) => caches.delete(name))
     )
   }
@@ -134,17 +148,31 @@ self.addEventListener('message', (event: ExtendableMessageEvent) => {
   if (!data || typeof data !== 'object') return
   if (data.type === 'HANDSHAKE') {
     knownImportmap = data.importmap ?? {}
-    knownConfig = data.config ?? null
+    const config = data.config
+    knownConfig = config && typeof config === 'object' ? (config as RawscriptConfig) : {}
+    // Warm the HTTP cache for a configured self-hosted compiler shim and the
+    // WASM binary for a configured self-hosted compiler, so an offline reload
+    // re-imports/re-initializes without the network (best-effort, silent).
+    if (knownConfig.esbuildUrl) {
+      fetch(knownConfig.esbuildUrl as string)
+        .then((response) => response.arrayBuffer())
+        .catch(() => {
+          // warming is best-effort; on-demand import still applies
+        })
+    }
+    if (knownConfig.wasmUrl) {
+      caches
+        .open(WASM_CACHE)
+        .then((cache) => cache.add(knownConfig.wasmUrl as string))
+        .catch(() => {
+          // warming is best-effort; on-demand fetch still applies
+        })
+    }
     event.ports?.[0]?.postMessage({
       type: 'SW_READY',
       protocolVersion: SW_PROTOCOL_VERSION,
       rawscriptVersion: RAWSCRIPT_VERSION,
     })
-    // Warm the compiler now that the page told us its configuration: the
-    // shim module and the WASM binary are the two cold-start costs that
-    // would otherwise hit on the first compile. Best-effort; failures are
-    // handled by the transpiler when initialization actually runs.
-    event.waitUntil(warmCompiler())
   } else if (data.type === 'IMPORTMAP') {
     // Backwards-compatible with older pages that only send the importmap.
     knownImportmap = data.importmap ?? {}
@@ -164,29 +192,6 @@ async function bustCache(url?: string): Promise<void> {
   } else {
     const keys = await cache.keys()
     await Promise.all(keys.map((key) => cache.delete(key)))
-  }
-}
-
-/**
- * Warm the compiler for the page's effective configuration: put the shim
- * module into the HTTP cache and ensure the WASM binary is in the WASM
- * cache. Runs during install (defaults) and again on handshake (configured
- * URLs) so a first compile is already warm.
- */
-async function warmCompiler(): Promise<void> {
-  try {
-    const esbuildUrl = knownConfig?.esbuildUrl ?? DEFAULT_ESBUILD_URL
-    const wasmUrl = knownConfig?.wasmUrl ?? DEFAULT_WASM_URL
-    await fetch(esbuildUrl, { cache: 'force-cache' })
-    const wasmCache = await caches.open(WASM_CACHE)
-    if (!(await wasmCache.match(wasmUrl))) {
-      await wasmCache.add(wasmUrl)
-    }
-  } catch (err) {
-    console.warn(
-      'rawscript: compiler warm-up failed; falling back to on-demand initialization',
-      err
-    )
   }
 }
 
@@ -238,11 +243,11 @@ async function handleFetch(event: FetchEvent): Promise<Response> {
   const url = new URL(event.request.url)
   const isGet = event.request.method === 'GET'
 
-  // Dependency cache: cross-origin requests — typically CDN modules such as
-  // esm.sh — are cache-first. A served copy keeps offline reloads of an
-  // already-loaded module graph working. Same-origin TS sources and the HTML
-  // document fall through to normal handling.
-  if (isGet && isDependencyRequest(event.request)) {
+  // Dependency cache (roadmap sections 19/21): import map values — typically
+  // third-party URLs such as esm.sh — are cache-first. A served copy keeps
+  // offline reloads of an already-loaded module graph working. Unmapped
+  // same-origin requests and TS sources fall through to normal handling.
+  if (isGet && isDependencyRequest(event.request, knownImportmap)) {
     const depsCache = await caches.open(DEPENDENCY_CACHE)
     const cachedDep = await depsCache.match(event.request)
     if (cachedDep) return cachedDep
@@ -259,9 +264,21 @@ async function handleFetch(event: FetchEvent): Promise<Response> {
     return depResponse
   }
 
-  const isTs =
-    isGet &&
-    (url.pathname.endsWith('.ts') || url.pathname.endsWith('.tsx'))
+  // Unmapped bare imports with CDN fallback disabled are rewritten to a
+  // reserved path. Answer them with a module that throws a structured,
+  // actionable diagnostic instead of a raw 404 (roadmap section 20).
+  if (isGet && url.pathname.startsWith(UNRESOLVED_PREFIX)) {
+    const specifier = decodeURIComponent(url.pathname.slice(UNRESOLVED_PREFIX.length))
+    const diagnostic = buildCompileDiagnostic({
+      file: specifier,
+      message: `could not be resolved: no import map entry and CDN fallback is disabled`,
+      chain: getImportChain(url.pathname),
+    })
+    notifyClient({ type: 'TRANSPILE_ERROR', ...diagnostic })
+    return transpileErrorResponse(diagnostic)
+  }
+
+  const isTs = isGet && (url.pathname.endsWith('.ts') || url.pathname.endsWith('.tsx'))
 
   if (!isTs) return fetch(event.request)
 
@@ -298,14 +315,12 @@ async function handleFetch(event: FetchEvent): Promise<Response> {
       importmap: knownImportmap,
       tsconfig: tsconfig?.raw ?? null,
       esbuild: ESBUILD_VERSION,
+      esbuildUrl: knownConfig.esbuildUrl ?? null,
+      wasmUrl: knownConfig.wasmUrl ?? null,
+      cdn: knownConfig.cdn ?? null,
       rawscript: RAWSCRIPT_VERSION,
       target: TARGET,
       format: FORMAT,
-      // Configuration-aware: a changed CDN base, disabled CDN fallback, or a
-      // different shim/WASM URL must never reuse compiled output.
-      cdn: knownConfig?.cdn ?? {},
-      esbuildUrl: knownConfig?.esbuildUrl ?? DEFAULT_ESBUILD_URL,
-      wasmUrl: knownConfig?.wasmUrl ?? DEFAULT_WASM_URL,
     })
   )
 
@@ -344,29 +359,9 @@ async function handleFetch(event: FetchEvent): Promise<Response> {
       toTranspile,
       url.pathname,
       jsxConfig,
-      knownConfig ?? undefined
+      knownConfig
     )
-    const rewritten = rewriteImports(js, knownImportmap, knownConfig?.cdn)
-
-    // A module that references an unresolvable bare import must fail loudly
-    // with a structured diagnostic instead of surfacing as a 404'd module
-    // request the page cannot explain.
-    const unresolved = findUnresolvedImports(rewritten)
-    if (unresolved.length > 0) {
-      const message =
-        `import "${unresolved[0]}" could not be resolved` +
-        (knownConfig?.cdn?.enabled === false
-          ? ' because CDN fallback is disabled; add it to the import map'
-          : ' by the CDN; add it to the import map')
-      const diagnostic = buildCompileDiagnostic({
-        file: url.pathname,
-        message,
-        source,
-        chain: getImportChain(url.pathname),
-      })
-      notifyClient({ type: 'TRANSPILE_ERROR', ...diagnostic })
-      return transpileErrorResponse(diagnostic)
-    }
+    const rewritten = rewriteImports(js, knownImportmap, knownConfig.cdn)
 
     const out = new Response(rewritten, {
       headers: {
@@ -445,36 +440,18 @@ function notifyClient(data: Record<string, unknown>): void {
 
 /**
  * A request is a dependency (eligible for the dependency cache) when it is a
- * cross-origin GET, or a same-origin GET whose URL is an import map value —
- * a project's own vendored modules behave exactly like CDN dependencies.
- * TS sources and the HTML document are never dependencies — they go through
- * the transpile/fallback pipeline instead.
+ * cross-origin GET, or a same-origin GET whose URL is an import map value
+ * (self-hosted dependencies). TS sources and the HTML document are never
+ * dependencies — they go through the transpile/fallback pipeline instead.
  */
-function isDependencyRequest(request: Request): boolean {
+function isDependencyRequest(request: Request, importmap: Record<string, string>): boolean {
   const url = new URL(request.url)
   if (url.pathname.endsWith('.ts') || url.pathname.endsWith('.tsx')) return false
   if (url.origin !== self.location.origin) return true
-  return Object.values(knownImportmap).some((value) => value === url.href)
-}
-
-/**
- * Collect bare specifiers that were rewritten to the unresolved prefix. The
- * prefix is URL-escaped in the rewritten output, so specifiers are restored
- * via decodeURIComponent.
- */
-function findUnresolvedImports(rewritten: string): string[] {
-  const specifiers: string[] = []
-  const escaped = UNRESOLVED_PREFIX.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  const re = new RegExp(escaped + "([^'\"`]+)", 'g')
-  let match: RegExpExecArray | null
-  while ((match = re.exec(rewritten)) !== null) {
-    try {
-      specifiers.push(decodeURIComponent(match[1]))
-    } catch {
-      specifiers.push(match[1])
-    }
+  for (const value of Object.values(importmap)) {
+    if (value === request.url) return true
   }
-  return specifiers
+  return false
 }
 
 /**
