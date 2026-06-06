@@ -55,10 +55,13 @@ const moduleGraph = new Map<string, string>()
 self.addEventListener('install', (event) => {
   // Never fail installation because the WASM pre-cache is unreachable — it
   // will simply be fetched on demand (transpiler.initializeFromCache).
+  // The default compiler shim URL is pre-warmed in the HTTP cache too so the
+  // first compile never waits on a cold CDN fetch.
   event.waitUntil(
     caches
       .open(WASM_CACHE)
       .then((cache) => cache.add(WASM_URL))
+      .then(() => fetch(DEFAULT_ESBUILD_URL, { cache: 'force-cache' }))
       .catch((err) =>
         console.warn('rawscript: WASM pre-cache failed; it will be fetched on demand', err)
       )
@@ -137,6 +140,11 @@ self.addEventListener('message', (event: ExtendableMessageEvent) => {
       protocolVersion: SW_PROTOCOL_VERSION,
       rawscriptVersion: RAWSCRIPT_VERSION,
     })
+    // Warm the compiler now that the page told us its configuration: the
+    // shim module and the WASM binary are the two cold-start costs that
+    // would otherwise hit on the first compile. Best-effort; failures are
+    // handled by the transpiler when initialization actually runs.
+    event.waitUntil(warmCompiler())
   } else if (data.type === 'IMPORTMAP') {
     // Backwards-compatible with older pages that only send the importmap.
     knownImportmap = data.importmap ?? {}
@@ -156,6 +164,29 @@ async function bustCache(url?: string): Promise<void> {
   } else {
     const keys = await cache.keys()
     await Promise.all(keys.map((key) => cache.delete(key)))
+  }
+}
+
+/**
+ * Warm the compiler for the page's effective configuration: put the shim
+ * module into the HTTP cache and ensure the WASM binary is in the WASM
+ * cache. Runs during install (defaults) and again on handshake (configured
+ * URLs) so a first compile is already warm.
+ */
+async function warmCompiler(): Promise<void> {
+  try {
+    const esbuildUrl = knownConfig?.esbuildUrl ?? DEFAULT_ESBUILD_URL
+    const wasmUrl = knownConfig?.wasmUrl ?? DEFAULT_WASM_URL
+    await fetch(esbuildUrl, { cache: 'force-cache' })
+    const wasmCache = await caches.open(WASM_CACHE)
+    if (!(await wasmCache.match(wasmUrl))) {
+      await wasmCache.add(wasmUrl)
+    }
+  } catch (err) {
+    console.warn(
+      'rawscript: compiler warm-up failed; falling back to on-demand initialization',
+      err
+    )
   }
 }
 
