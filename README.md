@@ -212,7 +212,8 @@ rawscript never invalidates caches by hand. Every compiled artifact is keyed by 
 - The SW re-fetches the source on every request (`cache: 'no-store'`), computes the fingerprint, and serves the cached output only if it matches. Any change — source edit, import map entry, tsconfig tweak — produces a new fingerprint and a fresh compile.
 - Cached responses carry a body hash checked on every hit. A corrupt entry (truncated write, partial eviction) is detected, deleted, and recompiled automatically.
 - Cache failures are never fatal: quota errors during writes and network failures during fetches degrade to stale-but-working output instead of broken pages.
-- Cache names are versioned (`rawscript-transpiled-v2`, `rawscript-meta-v1`, `rawscript-wasm-v1`). When the SW protocol version changes, the SW wipes all rawscript caches on activation.
+- Cache names are versioned (`rawscript-transpiled-v2`, `rawscript-meta-v1`, `rawscript-wasm-v1`, `rawscript-deps-v1`). When the SW protocol version changes, the SW wipes all rawscript caches on activation.
+- Dependencies are cache-first: import map values (typically third-party URLs such as esm.sh) are stored in the dependency cache as they are fetched, so an already-loaded module graph keeps working when the network goes away.
 
 The SW and the page talk through a small message protocol: the page sends a handshake (via a `MessageChannel` port), the SW replies with its protocol and rawscript versions, and a version mismatch triggers exactly one controlled reload. The first load performs at most one reload, so there is no reload loop.
 
