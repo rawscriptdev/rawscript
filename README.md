@@ -113,6 +113,8 @@ npx rawscript preview --dir dist --port 3000
 
 Deployment notes: the output of `rawscript build` is fully static — host `dist/` on any static file server or CDN. In the default mode the importmap references esm.sh at runtime; in `--local-deps` mode the output is self-contained (no esm.sh, no rawscript). What `rawscript preview` serves is exactly what you deploy, so the preview round-trip doubles as a smoke test for the deployment.
 
+For projects that run the rawscript *runtime* in production (rather than a bundled build), `rawscript vendor` copies the runtime and compiler into the project so nothing is fetched from a CDN — see [Self-hosting](#self-hosting).
+
 **`build` and `typecheck` are deliberately different operations:**
 
 - `rawscript build` transpiles and bundles — it does **not** type-check. esbuild strips types without verifying them.
@@ -226,6 +228,7 @@ There is deliberately **no `rawscript.config.*` file**. The configuration surfac
 - `tsconfig.json` — JSX settings, paths aliases, type checking (via the CLI)
 - the HTML import map — dependency versions
 - `data-*` attributes on the boot script tag — runtime knobs like the HMR interval
+- `window.rawscriptConfig` — deployment knobs for self-hosting (see below)
 
 That covers everything a rawscript project genuinely needs to configure, and it keeps the zero-config story intact. If a need appears that these cannot express, a config file will be added then — not before.
 
