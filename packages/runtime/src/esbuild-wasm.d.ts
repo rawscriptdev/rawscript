@@ -1,6 +1,6 @@
 /**
  * Ambient type declarations for the esbuild-wasm ESM bundle loaded
- * directly from the URL in the browser/service worker.
+ * dynamically from a URL (unpkg by default, or a self-hosted copy).
  *
  * Pinned to esbuild-wasm 0.20.2 — bump the URL and this declaration together.
  */
