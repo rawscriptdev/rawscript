@@ -234,6 +234,22 @@ That covers everything a rawscript project genuinely needs to configure, and it 
 
 ---
 
+## Self-hosting
+
+rawscript's default is zero-config and CDN-backed: the compiler comes from unpkg and unmapped bare imports fall back to esm.sh. For restricted networks, air-gapped deployments, or production honesty, every one of those third-party hosts can be removed.
+
+### 1. Vendor the assets
+
+`rawscript vendor` copies the runtime (`rawscript.js`, `rawscript-sw.js`) and the compiler (esbuild-wasm's ESM shim + WASM binary) into your project:
+
+```
+rawscript vendor --dir rawscript
+```
+
+The copied Service Worker is patched so it imports the local `./esbuild-browser.js` and `./esbuild.wasm` instead of unpkg — from that point the SW never touches a third-party host, with **zero configuration**.
+
+---
+
 ## Diagnostics
 
 Compile errors surface as a structured overlay on the page, answering four questions:
