@@ -1,6 +1,7 @@
 /**
  * Ambient type declarations for the esbuild-wasm ESM bundle loaded
- * dynamically from a URL (unpkg by default, or a self-hosted copy).
+ * dynamically from a URL (unpkg by default, or a self-hosted copy via
+ * `window.rawscriptConfig.esbuildUrl`).
  *
  * Pinned to esbuild-wasm 0.20.2 — bump the URL and this declaration together.
  */
