@@ -248,6 +248,38 @@ rawscript vendor --dir rawscript
 
 The copied Service Worker is patched so it imports the local `./esbuild-browser.js` and `./esbuild.wasm` instead of unpkg — from that point the SW never touches a third-party host, with **zero configuration**.
 
+### 2. Optional: `window.rawscriptConfig`
+
+Set this on the page **before** the rawscript script tag to override the defaults:
+
+```html
+<script>
+  window.rawscriptConfig = {
+    wasmUrl: '/rawscript/esbuild.wasm',           // default: https://unpkg.com/esbuild-wasm@0.20.2/esbuild.wasm
+    esbuildUrl: '/rawscript/esbuild-browser.js',  // default: https://unpkg.com/esbuild-wasm@0.20.2/esm/browser.js
+    cdn: {
+      base: 'https://esm.sh/',   // default CDN used for unmapped bare imports
+      enabled: false,            // false: unmapped bare imports become errors
+    },
+  }
+</script>
+<script src="/rawscript/rawscript.js"></script>
+```
+
+- `wasmUrl` / `esbuildUrl` point the compiler at self-hosted copies. This is optional when using `rawscript vendor` (the vendored SW is already self-contained) and required when serving the compiler from a custom location.
+- `cdn.base` overrides the zero-config CDN base URL.
+- `cdn.enabled: false` makes resolution strict: a bare import with no import map entry is rewritten to a reserved path that the SW answers with a structured `Module resolution error` ("could not be resolved") instead of silently fetching a CDN. In the fallback path (no Service Worker) unmapped specifiers are left for the browser to report, and a `console.warn` lists them.
+
+### 3. Offline behavior
+
+Once a page has loaded successfully, it keeps working with esm.sh and unpkg unreachable:
+
+- the compiler shim is served from the browser HTTP cache (it is warmed on install), and the WASM binary from the SW's WASM cache;
+- compiled `.ts` output is served from the content-fingerprint cache;
+- dependencies (import map values) are served from the dependency cache, cache-first.
+
+A vendored deployment needs no external network at any point, first load included.
+
 ---
 
 ## Diagnostics
