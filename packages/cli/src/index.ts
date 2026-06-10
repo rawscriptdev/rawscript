@@ -10,6 +10,8 @@
  * - `rawscript preview --dir` — serve production output as it would be deployed
  * - `rawscript deps` — bundle locally installed npm/pnpm dependencies into
  *   browser-ready ESM and generate a browser import map for them
+ * - `rawscript vendor` — copy the runtime and compiler assets into the project
+ *   so it can run fully self-hosted, with no CDN dependency at runtime
  */
 
 import { program } from 'commander'
