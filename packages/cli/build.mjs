@@ -17,7 +17,7 @@ await esbuild.build({
   target: 'node18',
   outfile: path.join(here, 'dist/cli.mjs'),
   banner: { js: '#!/usr/bin/env node' },
-  external: ['esbuild', 'commander', 'typescript'],
+  external: ['esbuild', 'commander', 'typescript', 'rawscript'],
 })
 
 console.log('✓ CLI built to dist/cli.mjs')
