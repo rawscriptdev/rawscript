@@ -20,6 +20,9 @@ importers:
       esbuild:
         specifier: ^0.20.2
         version: 0.20.2
+      rawscript:
+        specifier: workspace:*
+        version: link:../runtime
       typescript:
         specifier: ^5.4.0
         version: 5.9.3
