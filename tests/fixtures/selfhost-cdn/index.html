@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>rawscript — CDN dependency fixture (offline reload)</title>
+  <script src="/dist/rawscript.js"></script>
+  <script type="importmap">
+    { "imports": { "ms": "https://esm.sh/ms@2.1.3" } }
+  </script>
+</head>
+<body>
+  <div id="out"></div>
+  <script type="module" src="./main.ts"></script>
+</body>
+</html>
