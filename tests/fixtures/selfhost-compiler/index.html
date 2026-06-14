@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>rawscript — fully self-hosted fixture (vendored compiler)</title>
+  <script>
+    window.rawscriptConfig = {
+      cdn: { enabled: false },
+    }
+  </script>
+  <script
+    src="/tests/fixtures/selfhost-compiler/rawscript.js"
+    data-sw-path="/tests/fixtures/selfhost-compiler/rawscript-sw.js"
+  ></script>
+  <script type="importmap">
+    { "imports": { "locallib": "./dep.js" } }
+  </script>
+</head>
+<body>
+  <div id="out"></div>
+  <script type="module" src="./main.ts"></script>
+</body>
+</html>
