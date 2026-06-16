@@ -4,6 +4,9 @@
  * Self-hosting (roadmap section 19): CDN mode is optional. With the CDN
  * disabled and a local import map dependency, the page renders with esm.sh
  * blocked from the very first request — the dependency CDN is never touched.
+ * Once loaded, the page keeps rendering with esm.sh AND unpkg unreachable:
+ * the compiler shim comes from the HTTP cache, the WASM binary from the SW's
+ * cache, and transpiled output from the content-fingerprint cache.
  */
 
 const transientMime = /not a valid JavaScript MIME type for module script/
@@ -18,5 +21,29 @@ test.describe('self-hosting: CDN disabled, local dependencies', () => {
     await expect(page.locator('#out')).toHaveText('locallib: 42', { timeout: 60_000 })
 
     expect(pageErrors.filter((e) => !transientMime.test(e))).toEqual([])
+  })
+
+  test('offline reload: renders with esm.sh and unpkg unreachable', async ({ page }) => {
+    await page.goto('/tests/fixtures/selfhost/')
+    await expect(page.locator('#out')).toHaveText('locallib: 42', { timeout: 60_000 })
+
+    await page.route('https://esm.sh/**', (route) => route.abort())
+    await page.route('https://unpkg.com/**', (route) => route.abort())
+    await page.reload()
+
+    await expect(page.locator('#out')).toHaveText('locallib: 42', { timeout: 60_000 })
+  })
+
+  test('offline reload: keeps working after a second offline round-trip', async ({ page }) => {
+    await page.goto('/tests/fixtures/selfhost/')
+    await expect(page.locator('#out')).toHaveText('locallib: 42', { timeout: 60_000 })
+
+    await page.route('https://esm.sh/**', (route) => route.abort())
+    await page.route('https://unpkg.com/**', (route) => route.abort())
+    await page.reload()
+    await expect(page.locator('#out')).toHaveText('locallib: 42', { timeout: 60_000 })
+
+    await page.reload()
+    await expect(page.locator('#out')).toHaveText('locallib: 42', { timeout: 60_000 })
   })
 })
