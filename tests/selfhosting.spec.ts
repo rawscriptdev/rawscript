@@ -47,3 +47,22 @@ test.describe('self-hosting: CDN disabled, local dependencies', () => {
     await expect(page.locator('#out')).toHaveText('locallib: 42', { timeout: 60_000 })
   })
 })
+
+test.describe('self-hosting: structured unresolved-import diagnostics', () => {
+  test('unmapped bare import with CDN disabled raises "could not be resolved"', async ({ page }) => {
+    const pageErrors: string[] = []
+    page.on('pageerror', (err) => pageErrors.push(err.message))
+
+    await page.goto('/tests/fixtures/selfhost-unresolved/')
+
+    await expect
+      .poll(() => pageErrors.some((message) => message.includes('could not be resolved')), {
+        timeout: 60_000,
+      })
+      .toBe(true)
+
+    const diagnostic = pageErrors.find((message) => message.includes('could not be resolved'))
+    expect(diagnostic).toMatch(/Module resolution error/)
+    expect(diagnostic).toContain('missing-pkg')
+  })
+})
