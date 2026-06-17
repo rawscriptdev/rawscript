@@ -66,3 +66,20 @@ test.describe('self-hosting: structured unresolved-import diagnostics', () => {
     expect(diagnostic).toContain('missing-pkg')
   })
 })
+
+test.describe('self-hosting: CDN dependencies are cache-first', () => {
+  test('esm.sh dependency renders again with esm.sh and unpkg blocked', async ({ page }) => {
+    const pageErrors: string[] = []
+    page.on('pageerror', (err) => pageErrors.push(err.message))
+
+    await page.goto('/tests/fixtures/selfhost-cdn/')
+    await expect(page.locator('#out')).toHaveText('ms: 3600000', { timeout: 60_000 })
+
+    await page.route('https://esm.sh/**', (route) => route.abort())
+    await page.route('https://unpkg.com/**', (route) => route.abort())
+    await page.reload()
+
+    await expect(page.locator('#out')).toHaveText('ms: 3600000', { timeout: 60_000 })
+    expect(pageErrors.filter((e) => !transientMime.test(e))).toEqual([])
+  })
+})
