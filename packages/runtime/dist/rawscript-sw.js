@@ -1,58 +1,94 @@
+// src/config.ts
+var DEFAULT_WASM_URL = "https://unpkg.com/esbuild-wasm@0.20.2/esbuild.wasm";
+var DEFAULT_ESBUILD_URL = "https://unpkg.com/esbuild-wasm@0.20.2/esm/browser.js";
+
 // src/transpiler.ts
-import * as esbuild from "https://unpkg.com/esbuild-wasm@0.20.2/esm/browser.js";
-var WASM_URL = "https://unpkg.com/esbuild-wasm@0.20.2/esbuild.wasm";
+var WASM_URL = DEFAULT_WASM_URL;
 var WASM_CACHE = "rawscript-wasm-v1";
 var ESBUILD_VERSION = /esbuild-wasm@([^/]+)\//.exec(WASM_URL)?.[1] ?? "unknown";
-var initPromise = null;
-async function initializeFromCache() {
+function effectiveWasmUrl(config) {
+  return config?.wasmUrl ?? DEFAULT_WASM_URL;
+}
+async function initializeFromCache(esbuild2, wasmUrl) {
   if (typeof caches === "undefined")
     return false;
   let cache = null;
   try {
     cache = await caches.open(WASM_CACHE);
-    const cached = await cache.match(WASM_URL);
-    if (!cached)
-      return false;
+    let cached = await cache.match(wasmUrl);
+    if (!cached) {
+      const response = await fetch(wasmUrl);
+      if (!response.ok)
+        return false;
+      const bytes = await response.arrayBuffer();
+      try {
+        await cache.put(wasmUrl, new Response(bytes, { headers: { "Content-Type": "application/wasm" } }));
+      } catch {
+      }
+      cached = new Response(bytes, { headers: { "Content-Type": "application/wasm" } });
+    }
     const module = await WebAssembly.compile(await cached.arrayBuffer());
-    await esbuild.initialize({ wasmModule: module, worker: false });
+    await esbuild2.initialize({ wasmModule: module, worker: false });
     return true;
   } catch (err) {
     console.warn("rawscript: failed to initialize esbuild from cached WASM, deleting entry and falling back to network", err);
     try {
-      await cache?.delete(WASM_URL);
+      await cache?.delete(wasmUrl);
     } catch {
     }
     return false;
   }
 }
-async function ensureInitialized() {
-  if (!initPromise) {
-    initPromise = (async () => {
-      if (!await initializeFromCache()) {
-        await esbuild.initialize({ wasmURL: WASM_URL, worker: false });
-      }
-    })();
+var initState = /* @__PURE__ */ new Map();
+async function ensureInitialized(shim, config) {
+  const wasmUrl = effectiveWasmUrl(config);
+  const existing = initState.get(shim);
+  if (existing && existing.wasmUrl === wasmUrl)
+    return existing.promise;
+  if (existing && existing.wasmUrl !== wasmUrl) {
+    console.warn(
+      `rawscript: compiler WASM URL changed mid-life (${existing.wasmUrl} \u2192 ${wasmUrl}); keeping the first initialization until the next page load`
+    );
+    return existing.promise;
   }
-  await initPromise;
+  const promise = (async () => {
+    if (!await initializeFromCache(shim, wasmUrl)) {
+      await shim.initialize({ wasmURL: wasmUrl, worker: false });
+    }
+  })().catch((err) => {
+    initState.delete(shim);
+    throw err;
+  });
+  initState.set(shim, { promise, wasmUrl });
+  return promise;
 }
-async function transpile(source, filename, jsxConfig = {}) {
-  await ensureInitialized();
+function runTransform(shim, source, filename, jsxConfig) {
   const loader = filename.endsWith(".tsx") ? "tsx" : "ts";
-  const result = await esbuild.transform(source, {
+  return shim.transform(source, {
     loader,
     format: "esm",
     target: "esnext",
     sourcefile: filename,
     sourcemap: "inline",
     ...jsxConfig
-  });
-  return result.code;
+  }).then((result) => result.code);
 }
+async function transpileWith(shim, source, filename, jsxConfig = {}, config) {
+  await ensureInitialized(shim, config);
+  return runTransform(shim, source, filename, jsxConfig);
+}
+
+// src/sw.ts
+import * as esbuild from "https://unpkg.com/esbuild-wasm@0.20.2/esm/browser.js";
 
 // src/resolver.ts
 var IMPORT_RE = /\bfrom\s+(['"])((?:@[^/'"]+\/[^'"]+|[^.'"/][^'"]*))\1|import\s*\(\s*(['"])((?:@[^/'"]+\/[^'"]+|[^.'"/][^'"]*))\3\s*\)|import\s+(['"])((?:@[^/'"]+\/[^'"]+|[^.'"/][^'"]*))\5/g;
 var ANY_IMPORT_RE = /\bfrom\s+(['"])([^'"]+)\1|import\s*\(\s*(['"])([^'"]+)\3\s*\)|import\s+(['"])([^'"]+)\5/g;
 var ESM_SH = "https://esm.sh/";
+var UNRESOLVED_PREFIX = "/__rawscript/unresolved/";
+function unresolvedImportUrl(specifier) {
+  return UNRESOLVED_PREFIX + encodeURIComponent(specifier);
+}
 var STRING_RE = /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`/g;
 function isBareSpecifier(specifier) {
   if (specifier.startsWith("https://") || specifier.startsWith("http://") || specifier.startsWith("./") || specifier.startsWith("../") || specifier.startsWith("/")) {
@@ -165,12 +201,15 @@ function mapBareImports(js, mapper) {
   }
   return result;
 }
-function rewriteImports(js, importmap) {
+function rewriteImports(js, importmap, cdn = {}) {
   const map = importmap ?? {};
+  const cdnOptions = { enabled: true, base: ESM_SH, ...cdn };
   return mapBareImports(js, (specifier) => {
     if (specifier in map)
       return null;
-    return ESM_SH + specifier;
+    if (!cdnOptions.enabled)
+      return unresolvedImportUrl(specifier);
+    return cdnOptions.base + specifier;
   });
 }
 function collectImportSpecifiers(js) {
@@ -212,7 +251,7 @@ function extractErrorLocation(message) {
 function classifyError(message) {
   if (/JSX|jsx/.test(message))
     return "JSX configuration error";
-  if (/Could not resolve|not resolved|does not provide an export/.test(message)) {
+  if (/Could not resolve|not resolved|not be resolved|does not provide an export/.test(message)) {
     return "Module resolution error";
   }
   if (/Syntax error|Expected|Unexpected|Parse|Missing/.test(message))
@@ -228,7 +267,7 @@ function fixForError(message) {
   if (/JSX syntax extension is not currently enabled|jsx/i.test(message) && !/jsxImportSource/.test(message)) {
     return 'JSX was found in a file that is not being transpiled with JSX enabled. Rename the file to .tsx, or configure JSX in tsconfig.json (jsx: "react-jsx", optionally with jsxImportSource for Preact/Solid).';
   }
-  if (/Could not resolve|not resolved/.test(message)) {
+  if (/Could not resolve|not resolved|not be resolved/.test(message)) {
     return 'A bare import could not be resolved. Add it to the importmap in your HTML (e.g. "react": "https://esm.sh/react@18.3.1"), or check that a relative path points at an existing file.';
   }
   if (/does not provide an export|No matching export|no exported member/i.test(message)) {
@@ -517,20 +556,30 @@ function stripJsonComments(text) {
 // src/sw.ts
 var TRANSPILED_CACHE = "rawscript-transpiled-v2";
 var META_CACHE = "rawscript-meta-v1";
+var DEPENDENCY_CACHE = "rawscript-deps-v1";
 var META_KEY = "rawscript://meta";
 var FINGERPRINT_HEADER = "x-rawscript-fingerprint";
 var BODY_HASH_HEADER = "x-rawscript-body-hash";
 var TARGET = "esnext";
 var FORMAT = "esm";
 var knownImportmap = {};
+var knownConfig = {};
 var configState = null;
 var CONFIG_TTL_MS = 5e3;
 var moduleGraph = /* @__PURE__ */ new Map();
 self.addEventListener("install", (event) => {
   event.waitUntil(
-    caches.open(WASM_CACHE).then((cache) => cache.add(WASM_URL)).catch(
-      (err) => console.warn("rawscript: WASM pre-cache failed; it will be fetched on demand", err)
-    )
+    Promise.all([
+      caches.open(WASM_CACHE).then((cache) => cache.add(WASM_URL)).catch(
+        (err) => console.warn("rawscript: WASM pre-cache failed; it will be fetched on demand", err)
+      ),
+      // Warm the browser HTTP cache for the default esbuild-wasm shim so an
+      // offline reload can re-import it without the network. (Cache Storage
+      // does not feed dynamic import(); the HTTP cache does.)
+      fetch(DEFAULT_ESBUILD_URL).then((response) => response.arrayBuffer()).catch(
+        (err) => console.warn("rawscript: esbuild shim pre-warm failed; it will be fetched on demand", err)
+      )
+    ])
   );
   self.skipWaiting();
 });
@@ -546,7 +595,9 @@ async function activate() {
     await Promise.all(names.map((name) => caches.delete(name)));
   } else {
     await Promise.all(
-      names.filter((name) => name !== WASM_CACHE && name !== TRANSPILED_CACHE && name !== META_CACHE).map((name) => caches.delete(name))
+      names.filter(
+        (name) => name !== WASM_CACHE && name !== TRANSPILED_CACHE && name !== META_CACHE && name !== DEPENDENCY_CACHE
+      ).map((name) => caches.delete(name))
     );
   }
   try {
@@ -586,6 +637,16 @@ self.addEventListener("message", (event) => {
     return;
   if (data.type === "HANDSHAKE") {
     knownImportmap = data.importmap ?? {};
+    const config = data.config;
+    knownConfig = config && typeof config === "object" ? config : {};
+    if (knownConfig.esbuildUrl) {
+      fetch(knownConfig.esbuildUrl).then((response) => response.arrayBuffer()).catch(() => {
+      });
+    }
+    if (knownConfig.wasmUrl) {
+      caches.open(WASM_CACHE).then((cache) => cache.add(knownConfig.wasmUrl)).catch(() => {
+      });
+    }
     event.ports?.[0]?.postMessage({
       type: "SW_READY",
       protocolVersion: SW_PROTOCOL_VERSION,
@@ -641,7 +702,33 @@ async function getTsconfigState(pathname) {
 }
 async function handleFetch(event) {
   const url = new URL(event.request.url);
-  const isTs = event.request.method === "GET" && (url.pathname.endsWith(".ts") || url.pathname.endsWith(".tsx"));
+  const isGet = event.request.method === "GET";
+  if (isGet && isDependencyRequest(event.request, knownImportmap)) {
+    const depsCache = await caches.open(DEPENDENCY_CACHE);
+    const cachedDep = await depsCache.match(event.request);
+    if (cachedDep)
+      return cachedDep;
+    const depResponse = await fetch(event.request);
+    if (depResponse.ok) {
+      try {
+        await depsCache.put(event.request, depResponse.clone());
+      } catch (err) {
+        console.warn("rawscript: failed to cache dependency", event.request.url, err);
+      }
+    }
+    return depResponse;
+  }
+  if (isGet && url.pathname.startsWith(UNRESOLVED_PREFIX)) {
+    const specifier = decodeURIComponent(url.pathname.slice(UNRESOLVED_PREFIX.length));
+    const diagnostic = buildCompileDiagnostic({
+      file: specifier,
+      message: `could not be resolved: no import map entry and CDN fallback is disabled`,
+      chain: getImportChain(url.pathname)
+    });
+    notifyClient({ type: "TRANSPILE_ERROR", ...diagnostic });
+    return transpileErrorResponse(diagnostic);
+  }
+  const isTs = isGet && (url.pathname.endsWith(".ts") || url.pathname.endsWith(".tsx"));
   if (!isTs)
     return fetch(event.request);
   let source;
@@ -669,6 +756,9 @@ async function handleFetch(event) {
       importmap: knownImportmap,
       tsconfig: tsconfig?.raw ?? null,
       esbuild: ESBUILD_VERSION,
+      esbuildUrl: knownConfig.esbuildUrl ?? null,
+      wasmUrl: knownConfig.wasmUrl ?? null,
+      cdn: knownConfig.cdn ?? null,
       rawscript: RAWSCRIPT_VERSION,
       target: TARGET,
       format: FORMAT
@@ -699,8 +789,14 @@ async function handleFetch(event) {
         toTranspile = mapped;
     }
     recordModuleGraph(url.pathname, source);
-    const js = await transpile(toTranspile, url.pathname, jsxConfig);
-    const rewritten = rewriteImports(js, knownImportmap);
+    const js = await transpileWith(
+      esbuild,
+      toTranspile,
+      url.pathname,
+      jsxConfig,
+      knownConfig
+    );
+    const rewritten = rewriteImports(js, knownImportmap, knownConfig.cdn);
     const out = new Response(rewritten, {
       headers: {
         "Content-Type": "application/javascript; charset=utf-8",
@@ -768,6 +864,18 @@ function notifyClient(data) {
       client.postMessage(data);
     }
   });
+}
+function isDependencyRequest(request, importmap) {
+  const url = new URL(request.url);
+  if (url.pathname.endsWith(".ts") || url.pathname.endsWith(".tsx"))
+    return false;
+  if (url.origin !== self.location.origin)
+    return true;
+  for (const value of Object.values(importmap)) {
+    if (value === request.url)
+      return true;
+  }
+  return false;
 }
 function transpileErrorResponse(diagnostic) {
   const safe = diagnostic.message.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\n/g, "\\n");
