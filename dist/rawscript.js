@@ -1,18 +1,7 @@
 "use strict";
 (() => {
-  var __create = Object.create;
   var __defProp = Object.defineProperty;
-  var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
   var __getOwnPropNames = Object.getOwnPropertyNames;
-  var __getProtoOf = Object.getPrototypeOf;
-  var __hasOwnProp = Object.prototype.hasOwnProperty;
-  var __require = /* @__PURE__ */ ((x) => typeof require !== "undefined" ? require : typeof Proxy !== "undefined" ? new Proxy(x, {
-    get: (a, b) => (typeof require !== "undefined" ? require : a)[b]
-  }) : x)(function(x) {
-    if (typeof require !== "undefined")
-      return require.apply(this, arguments);
-    throw Error('Dynamic require of "' + x + '" is not supported');
-  });
   var __esm = (fn, res) => function __init() {
     return fn && (res = (0, fn[__getOwnPropNames(fn)[0]])(fn = 0)), res;
   };
@@ -20,22 +9,47 @@
     for (var name in all)
       __defProp(target, name, { get: all[name], enumerable: true });
   };
-  var __copyProps = (to, from, except, desc) => {
-    if (from && typeof from === "object" || typeof from === "function") {
-      for (let key of __getOwnPropNames(from))
-        if (!__hasOwnProp.call(to, key) && key !== except)
-          __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+
+  // src/config.ts
+  var config_exports = {};
+  __export(config_exports, {
+    DEFAULT_CDN_BASE: () => DEFAULT_CDN_BASE,
+    DEFAULT_ESBUILD_URL: () => DEFAULT_ESBUILD_URL,
+    DEFAULT_WASM_URL: () => DEFAULT_WASM_URL,
+    readConfig: () => readConfig
+  });
+  function readConfig() {
+    if (typeof window === "undefined")
+      return {};
+    const config = window.rawscriptConfig;
+    if (!config || typeof config !== "object")
+      return {};
+    const raw = config;
+    const out = {};
+    if (typeof raw.wasmUrl === "string")
+      out.wasmUrl = raw.wasmUrl;
+    if (typeof raw.esbuildUrl === "string")
+      out.esbuildUrl = raw.esbuildUrl;
+    if (raw.cdn && typeof raw.cdn === "object") {
+      const cdn = raw.cdn;
+      const cdnOut = {};
+      if (typeof cdn.base === "string")
+        cdnOut.base = cdn.base;
+      if (typeof cdn.enabled === "boolean")
+        cdnOut.enabled = cdn.enabled;
+      out.cdn = cdnOut;
     }
-    return to;
-  };
-  var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__getProtoOf(mod)) : {}, __copyProps(
-    // If the importer is in node compatibility mode or this is not an ESM
-    // file that has been converted to a CommonJS file using a Babel-
-    // compatible transform (i.e. "__esModule" has not been set), then set
-    // "default" to the CommonJS "module.exports" for node compatibility.
-    isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target,
-    mod
-  ));
+    return out;
+  }
+  var DEFAULT_WASM_URL, DEFAULT_ESBUILD_URL, DEFAULT_CDN_BASE;
+  var init_config = __esm({
+    "src/config.ts"() {
+      "use strict";
+      DEFAULT_WASM_URL = "https://unpkg.com/esbuild-wasm@0.20.2/esbuild.wasm";
+      DEFAULT_ESBUILD_URL = "https://unpkg.com/esbuild-wasm@0.20.2/esm/browser.js";
+      DEFAULT_CDN_BASE = "https://esm.sh/";
+    }
+  });
 
   // src/transpiler.ts
   var transpiler_exports = {};
@@ -43,71 +57,120 @@
     ESBUILD_VERSION: () => ESBUILD_VERSION,
     WASM_CACHE: () => WASM_CACHE,
     WASM_URL: () => WASM_URL,
-    transpile: () => transpile
+    loadShim: () => loadShim,
+    transpile: () => transpile,
+    transpileWith: () => transpileWith
   });
-  async function initializeFromCache() {
+  async function loadShim(config) {
+    const url = config?.esbuildUrl ?? DEFAULT_ESBUILD_URL;
+    let pending = esbuildModules.get(url);
+    if (!pending) {
+      pending = import(url);
+      esbuildModules.set(url, pending);
+      pending.catch(() => esbuildModules.delete(url));
+    }
+    return pending;
+  }
+  function effectiveWasmUrl(config) {
+    return config?.wasmUrl ?? DEFAULT_WASM_URL;
+  }
+  async function initializeFromCache(esbuild, wasmUrl) {
     if (typeof caches === "undefined")
       return false;
     let cache = null;
     try {
       cache = await caches.open(WASM_CACHE);
-      const cached = await cache.match(WASM_URL);
-      if (!cached)
-        return false;
+      let cached = await cache.match(wasmUrl);
+      if (!cached) {
+        const response = await fetch(wasmUrl);
+        if (!response.ok)
+          return false;
+        const bytes = await response.arrayBuffer();
+        try {
+          await cache.put(wasmUrl, new Response(bytes, { headers: { "Content-Type": "application/wasm" } }));
+        } catch {
+        }
+        cached = new Response(bytes, { headers: { "Content-Type": "application/wasm" } });
+      }
       const module = await WebAssembly.compile(await cached.arrayBuffer());
       await esbuild.initialize({ wasmModule: module, worker: false });
       return true;
     } catch (err) {
       console.warn("rawscript: failed to initialize esbuild from cached WASM, deleting entry and falling back to network", err);
       try {
-        await cache?.delete(WASM_URL);
+        await cache?.delete(wasmUrl);
       } catch {
       }
       return false;
     }
   }
-  async function ensureInitialized() {
-    if (!initPromise) {
-      initPromise = (async () => {
-        if (!await initializeFromCache()) {
-          await esbuild.initialize({ wasmURL: WASM_URL, worker: false });
-        }
-      })();
+  async function ensureInitialized(shim, config) {
+    const wasmUrl = effectiveWasmUrl(config);
+    const existing = initState.get(shim);
+    if (existing && existing.wasmUrl === wasmUrl)
+      return existing.promise;
+    if (existing && existing.wasmUrl !== wasmUrl) {
+      console.warn(
+        `rawscript: compiler WASM URL changed mid-life (${existing.wasmUrl} \u2192 ${wasmUrl}); keeping the first initialization until the next page load`
+      );
+      return existing.promise;
     }
-    await initPromise;
+    const promise = (async () => {
+      if (!await initializeFromCache(shim, wasmUrl)) {
+        await shim.initialize({ wasmURL: wasmUrl, worker: false });
+      }
+    })().catch((err) => {
+      initState.delete(shim);
+      throw err;
+    });
+    initState.set(shim, { promise, wasmUrl });
+    return promise;
   }
-  async function transpile(source, filename, jsxConfig = {}) {
-    await ensureInitialized();
+  function runTransform(shim, source, filename, jsxConfig) {
     const loader = filename.endsWith(".tsx") ? "tsx" : "ts";
-    const result = await esbuild.transform(source, {
+    return shim.transform(source, {
       loader,
       format: "esm",
       target: "esnext",
       sourcefile: filename,
       sourcemap: "inline",
       ...jsxConfig
-    });
-    return result.code;
+    }).then((result) => result.code);
   }
-  var esbuild, WASM_URL, WASM_CACHE, ESBUILD_VERSION, initPromise;
+  async function transpile(source, filename, jsxConfig = {}, config) {
+    const shim = await loadShim(config);
+    await ensureInitialized(shim, config);
+    return runTransform(shim, source, filename, jsxConfig);
+  }
+  async function transpileWith(shim, source, filename, jsxConfig = {}, config) {
+    await ensureInitialized(shim, config);
+    return runTransform(shim, source, filename, jsxConfig);
+  }
+  var WASM_URL, WASM_CACHE, ESBUILD_VERSION, esbuildModules, initState;
   var init_transpiler = __esm({
     "src/transpiler.ts"() {
       "use strict";
-      esbuild = __toESM(__require("https://unpkg.com/esbuild-wasm@0.20.2/esm/browser.js"), 1);
-      WASM_URL = "https://unpkg.com/esbuild-wasm@0.20.2/esbuild.wasm";
+      init_config();
+      WASM_URL = DEFAULT_WASM_URL;
       WASM_CACHE = "rawscript-wasm-v1";
       ESBUILD_VERSION = /esbuild-wasm@([^/]+)\//.exec(WASM_URL)?.[1] ?? "unknown";
-      initPromise = null;
+      esbuildModules = /* @__PURE__ */ new Map();
+      initState = /* @__PURE__ */ new Map();
     }
   });
 
   // src/resolver.ts
   var resolver_exports = {};
   __export(resolver_exports, {
+    UNRESOLVED_PREFIX: () => UNRESOLVED_PREFIX,
     collectImportSpecifiers: () => collectImportSpecifiers,
     mapBareImports: () => mapBareImports,
-    rewriteImports: () => rewriteImports
+    rewriteImports: () => rewriteImports,
+    unresolvedImportUrl: () => unresolvedImportUrl
   });
+  function unresolvedImportUrl(specifier) {
+    return UNRESOLVED_PREFIX + encodeURIComponent(specifier);
+  }
   function isBareSpecifier(specifier) {
     if (specifier.startsWith("https://") || specifier.startsWith("http://") || specifier.startsWith("./") || specifier.startsWith("../") || specifier.startsWith("/")) {
       return false;
@@ -219,12 +282,15 @@
     }
     return result;
   }
-  function rewriteImports(js, importmap) {
+  function rewriteImports(js, importmap, cdn = {}) {
     const map = importmap ?? {};
+    const cdnOptions = { enabled: true, base: ESM_SH, ...cdn };
     return mapBareImports(js, (specifier) => {
       if (specifier in map)
         return null;
-      return ESM_SH + specifier;
+      if (!cdnOptions.enabled)
+        return unresolvedImportUrl(specifier);
+      return cdnOptions.base + specifier;
     });
   }
   function collectImportSpecifiers(js) {
@@ -240,13 +306,14 @@
     }
     return out;
   }
-  var IMPORT_RE, ANY_IMPORT_RE, ESM_SH, STRING_RE;
+  var IMPORT_RE, ANY_IMPORT_RE, ESM_SH, UNRESOLVED_PREFIX, STRING_RE;
   var init_resolver = __esm({
     "src/resolver.ts"() {
       "use strict";
       IMPORT_RE = /\bfrom\s+(['"])((?:@[^/'"]+\/[^'"]+|[^.'"/][^'"]*))\1|import\s*\(\s*(['"])((?:@[^/'"]+\/[^'"]+|[^.'"/][^'"]*))\3\s*\)|import\s+(['"])((?:@[^/'"]+\/[^'"]+|[^.'"/][^'"]*))\5/g;
       ANY_IMPORT_RE = /\bfrom\s+(['"])([^'"]+)\1|import\s*\(\s*(['"])([^'"]+)\3\s*\)|import\s+(['"])([^'"]+)\5/g;
       ESM_SH = "https://esm.sh/";
+      UNRESOLVED_PREFIX = "/__rawscript/unresolved/";
       STRING_RE = /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`/g;
     }
   });
@@ -327,6 +394,7 @@
       return;
     const transpiler = await Promise.resolve().then(() => (init_transpiler(), transpiler_exports));
     const resolver = await Promise.resolve().then(() => (init_resolver(), resolver_exports));
+    const config = (await Promise.resolve().then(() => (init_config(), config_exports))).readConfig();
     console.warn(
       "rawscript: Service Workers are unavailable \u2014 using the Blob URL fallback. Slower and no cross-load caching."
     );
@@ -346,14 +414,21 @@
           return null;
         let js;
         try {
-          js = await transpiler.transpile(source, src);
+          js = await transpiler.transpile(source, src, {}, config);
         } catch (err) {
           console.error(`rawscript: fallback failed to transpile ${src}:`, err);
           if (scriptElement)
             scriptElement.style.display = "none";
           return null;
         }
-        const rewritten = resolver.rewriteImports(js, importmap);
+        const rewritten = resolver.rewriteImports(js, importmap, config.cdn);
+        if (config.cdn?.enabled === false) {
+          for (const spec of resolver.collectImportSpecifiers(source)) {
+            if (!(spec in importmap) && !spec.startsWith("./") && !spec.startsWith("../")) {
+              console.warn(`rawscript: "${spec}" has no import map entry and CDN fallback is disabled`, src);
+            }
+          }
+        }
         const resolved = await resolveRelativeImports(rewritten, src, processFile);
         const blob = new Blob([resolved], { type: "application/javascript; charset=utf-8" });
         const blobUrl = URL.createObjectURL(blob);
@@ -830,6 +905,7 @@
   var SW_PROTOCOL_VERSION = 1;
 
   // src/boot.ts
+  init_config();
   var DEFAULT_SW_PATH = "/rawscript-sw.js";
   var hmrChannel = null;
   var debugPanel = null;
@@ -868,7 +944,8 @@
         type: "HANDSHAKE",
         protocolVersion: SW_PROTOCOL_VERSION,
         rawscriptVersion: RAWSCRIPT_VERSION,
-        importmap: imports
+        importmap: imports,
+        config: readConfig()
       },
       [channel.port2]
     );
@@ -916,6 +993,12 @@
       registration = inline ? await registerInlineSw(swPath) : await navigator.serviceWorker.register(swPath, { type: "module" });
     } catch (err) {
       console.warn("rawscript: Service Worker registration failed, using Blob URL fallback.", err);
+      hideLoadingIndicator();
+      runFallback();
+      return;
+    }
+    if (!registration) {
+      console.warn("rawscript: Service Worker registration returned no registration, using Blob URL fallback.");
       hideLoadingIndicator();
       runFallback();
       return;
