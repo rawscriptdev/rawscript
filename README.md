@@ -371,7 +371,7 @@ pnpm test         # both
 pnpm typecheck    # tsc --noEmit across all packages
 ```
 
-The e2e suite launches real browsers via Playwright and covers: SW fetch interception + WASM pre-caching, importmap-driven JSX transforms, all five framework examples, and the CLI's build + serve round-trip. There are no unit tests for the SW itself — integration tests against a real browser are more reliable for fetch interception behavior.
+The e2e suite launches real browsers via Playwright and covers: SW fetch interception + WASM pre-caching, importmap-driven JSX transforms, all five framework examples, the CLI's build + serve round-trip, and self-hosting (CDN-disabled pages, offline reloads with esm.sh/unpkg blocked, and the vendored-compiler deployment). There are no unit tests for the SW itself — integration tests against a real browser are more reliable for fetch interception behavior.
 
 ### Adding a new runtime module
 
