@@ -20,6 +20,7 @@ import { build } from './bundler.js'
 import { serve, serveDir } from './serve.js'
 import { runTypecheck } from './typecheck.js'
 import { generateDeps } from './deps.js'
+import { vendor, ESBUILD_WASM_VERSION } from './vendor.js'
 
 program
   .name('rawscript')
@@ -96,6 +97,50 @@ program
   .option('--out <path>', 'Output directory for dependency bundles and the import map', '.rawscript/deps')
   .action(async (options) => {
     await generateDeps(options.entry, options.out)
+  })
+
+program
+  .command('vendor')
+  .description(
+    'Copy the runtime (rawscript.js, rawscript-sw.js) and compiler (esbuild-wasm) ' +
+      'assets into the project so it can run self-hosted with no runtime CDN dependency. ' +
+      'Prints the window.rawscriptConfig snippet to wire the page to the vendored files.'
+  )
+  .option(
+    '--dir <path>',
+    'Directory to vendor assets into (served by your web server)',
+    'rawscript'
+  )
+  .action(async (options) => {
+    const result = await vendor(options.dir)
+    if (result.files.length === 0) {
+      console.error('✗ Nothing was vendored — check the warnings above.')
+      process.exitCode = 1
+      return
+    }
+    console.log(`✓ Vendored ${result.files.length} asset${result.files.length === 1 ? '' : 's'} into ${result.dir}:`)
+    for (const file of result.files) console.log(`  - ${file}`)
+    if (result.missing.length > 0) {
+      console.warn(
+        `⚠ Missing: ${result.missing.join(', ')}. Runtime files were copied, but the compiler ` +
+          'was not downloaded — rerun `rawscript vendor` when the network is available.'
+      )
+    }
+    const prefix = result.dir.replace(/\\/g, '/')
+    console.log('')
+    console.log('Wire the page to the vendored assets by adding this BEFORE the script tag:')
+    console.log('')
+    console.log(`  <script>
+    window.rawscriptConfig = {
+      wasmUrl: '/${prefix}/esbuild.wasm',
+      esbuildUrl: '/${prefix}/esbuild-browser.js',
+      cdn: { base: 'https://esm.sh/', enabled: true },
+    }
+  </script>`)
+    console.log(`  <script src="/${prefix}/rawscript.js"></script>`)
+    console.log('')
+    console.log('Remove the CDN fallback entirely on restricted networks with cdn: { enabled: false }.')
+    console.log(`(esbuild-wasm@${ESBUILD_WASM_VERSION} — keep packages/runtime/src/config.ts in sync when bumping.)`)
   })
 
 program.parse()
