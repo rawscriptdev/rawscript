@@ -382,11 +382,13 @@ The e2e suite launches real browsers via Playwright and covers: SW fetch interce
 
 ### Bumping the esbuild-wasm version
 
-The version is pinned in two places and must match:
+The version is pinned in four places and must match:
 
 ```
-packages/runtime/src/transpiler.ts  → wasmURL: 'https://unpkg.com/esbuild-wasm@X.X.X/esbuild.wasm'
-packages/runtime/src/sw.ts          → import ... from 'https://unpkg.com/esbuild-wasm@X.X.X/esm/browser.js'
+packages/runtime/src/config.ts        → DEFAULT_WASM_URL / DEFAULT_ESBUILD_URL (esbuild-wasm@X.X.X)
+packages/runtime/src/transpiler.ts    → wasmURL default
+packages/runtime/src/sw.ts            → import ... from 'https://unpkg.com/esbuild-wasm@X.X.X/esm/browser.js'
+packages/cli/src/vendor.ts            → ESBUILD_WASM_VERSION (used to download the vendored assets)
 ```
 
 Also bump the cache name in `sw.ts` (`rawscript-wasm-vN`) to force re-fetch on existing installs.
