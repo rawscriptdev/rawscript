@@ -391,7 +391,7 @@ packages/runtime/src/sw.ts            → import ... from 'https://unpkg.com/esb
 packages/cli/src/vendor.ts            → ESBUILD_WASM_VERSION (used to download the vendored assets)
 ```
 
-Also bump the cache name in `sw.ts` (`rawscript-wasm-vN`) to force re-fetch on existing installs.
+Also bump the cache name in `sw.ts` (`rawscript-wasm-vN`) to force re-fetch on existing installs, and rerun the self-hosting e2e (`tests/selfhosting.spec.ts`), which downloads the vendored compiler through `rawscript vendor`.
 
 ---
 
