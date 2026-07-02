@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>rawscript — strict CSP self-hosted fixture</title>
+  <script>
+    window.rawscriptConfig = { cdn: { enabled: false } }
+  </script>
+  <script type="importmap">
+    { "imports": { "locallib": "./dep.js" } }
+  </script>
+  <script src="./rawscript.js"></script>
+</head>
+<body>
+  <div id="out"></div>
+  <script type="module" src="./main.ts"></script>
+</body>
+</html>

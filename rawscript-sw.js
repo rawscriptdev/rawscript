@@ -205,8 +205,9 @@ function rewriteImports(js, importmap, cdn = {}) {
   const map = importmap ?? {};
   const cdnOptions = { enabled: true, base: ESM_SH, ...cdn };
   return mapBareImports(js, (specifier) => {
-    if (specifier in map)
-      return null;
+    if (specifier in map) {
+      return map[specifier];
+    }
     if (!cdnOptions.enabled)
       return unresolvedImportUrl(specifier);
     return cdnOptions.base + specifier;
@@ -235,6 +236,14 @@ function fnv1a(input) {
   }
   return (hash >>> 0).toString(16).padStart(8, "0");
 }
+function fnv1aBytes(input) {
+  let hash = 2166136261;
+  for (let i = 0; i < input.length; i++) {
+    hash ^= input[i];
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
 
 // src/version.ts
 var RAWSCRIPT_VERSION = "0.2.0";
@@ -254,7 +263,7 @@ function classifyError(message) {
   if (/Could not resolve|not resolved|not be resolved|does not provide an export/.test(message)) {
     return "Module resolution error";
   }
-  if (/Syntax error|Expected|Unexpected|Parse|Missing/.test(message))
+  if (/Syntax error|Expected|Unexpected|Parse|Missing|Unterminated/.test(message))
     return "Syntax error";
   if (/No matching export|does not provide an export|no exported member/.test(message)) {
     return "Import error";
@@ -273,7 +282,7 @@ function fixForError(message) {
   if (/does not provide an export|No matching export|no exported member/i.test(message)) {
     return "The imported name is not exported by the target module. Check the export list of the imported file, or remove the named import.";
   }
-  if (/Syntax error|Expected|Unexpected|Missing/i.test(message)) {
+  if (/Syntax error|Expected|Unexpected|Missing|Unterminated/i.test(message)) {
     return "Look at the marked line: a bracket, brace, parenthesis, quote, or semicolon is missing or duplicated. If the error is in generated code, the original source is shown by the code frame above.";
   }
   return "Inspect the code frame above and fix the reported line. If the error repeats, run `rawscript typecheck` for the full compiler diagnostic list.";
@@ -553,6 +562,78 @@ function stripJsonComments(text) {
   return out;
 }
 
+// src/limits.ts
+var DEFAULT_LIMITS = {
+  maxSourceBytes: 2e6,
+  maxModules: 2e4,
+  maxCompileMs: 3e4,
+  maxCachedModules: 500
+};
+var HARD_CEILINGS = {
+  maxSourceBytes: 5e7,
+  maxModules: 1e5,
+  maxCompileMs: 12e4,
+  maxCachedModules: 1e4
+};
+var FLOORS = {
+  maxSourceBytes: 1024,
+  maxModules: 1e3,
+  maxCompileMs: 1e3,
+  maxCachedModules: 50
+};
+function clampInt(value, floor, ceil, def) {
+  if (typeof value !== "number" || !Number.isFinite(value))
+    return def;
+  return Math.min(ceil, Math.max(floor, Math.floor(value)));
+}
+function parseLimits(raw) {
+  const out = { ...DEFAULT_LIMITS };
+  if (!raw || typeof raw !== "object" || Array.isArray(raw))
+    return out;
+  const r = raw;
+  out.maxSourceBytes = clampInt(
+    r.maxSourceBytes,
+    FLOORS.maxSourceBytes,
+    HARD_CEILINGS.maxSourceBytes,
+    DEFAULT_LIMITS.maxSourceBytes
+  );
+  out.maxModules = clampInt(
+    r.maxModules,
+    FLOORS.maxModules,
+    HARD_CEILINGS.maxModules,
+    DEFAULT_LIMITS.maxModules
+  );
+  out.maxCompileMs = clampInt(
+    r.maxCompileMs,
+    FLOORS.maxCompileMs,
+    HARD_CEILINGS.maxCompileMs,
+    DEFAULT_LIMITS.maxCompileMs
+  );
+  out.maxCachedModules = clampInt(
+    r.maxCachedModules,
+    FLOORS.maxCachedModules,
+    HARD_CEILINGS.maxCachedModules,
+    DEFAULT_LIMITS.maxCachedModules
+  );
+  return out;
+}
+var DEPENDENCY_MIME_ALLOWLIST = /* @__PURE__ */ new Set([
+  "application/javascript",
+  "text/javascript",
+  "application/x-javascript",
+  "application/ecmascript",
+  "text/ecmascript",
+  "application/json",
+  "text/json",
+  "application/importmap+json",
+  "application/wasm"
+]);
+function isCachableDependencyMime(contentType) {
+  if (!contentType)
+    return false;
+  return DEPENDENCY_MIME_ALLOWLIST.has(contentType.split(";")[0].trim().toLowerCase());
+}
+
 // src/sw.ts
 var TRANSPILED_CACHE = "rawscript-transpiled-v2";
 var META_CACHE = "rawscript-meta-v1";
@@ -564,9 +645,67 @@ var TARGET = "esnext";
 var FORMAT = "esm";
 var knownImportmap = {};
 var knownConfig = {};
+var limits = { ...DEFAULT_LIMITS };
 var configState = null;
 var CONFIG_TTL_MS = 5e3;
+var configVersion = 0;
+var resolveFirstHandshake = null;
+var firstHandshake = new Promise((resolve) => {
+  resolveFirstHandshake = resolve;
+});
+var HANDSHAKE_GRACE_MS = 1e3;
+var handshakeClients = /* @__PURE__ */ new Set();
+var pendingClientHandshakes = /* @__PURE__ */ new Map();
+var clientHandshakePromises = /* @__PURE__ */ new Map();
+function waitForClientHandshake(clientId) {
+  if (handshakeClients.has(clientId))
+    return Promise.resolve();
+  const existing = clientHandshakePromises.get(clientId);
+  if (existing)
+    return existing;
+  let resolve;
+  const promise = new Promise((r) => {
+    resolve = r;
+  });
+  pendingClientHandshakes.set(clientId, resolve);
+  clientHandshakePromises.set(clientId, promise);
+  return promise;
+}
+function recordClientHandshake(clientId) {
+  if (!clientId)
+    return;
+  handshakeClients.add(clientId);
+  const resolve = pendingClientHandshakes.get(clientId);
+  pendingClientHandshakes.delete(clientId);
+  clientHandshakePromises.delete(clientId);
+  resolve?.();
+}
 var moduleGraph = /* @__PURE__ */ new Map();
+function sanitizeImportmap(raw, baseUrl) {
+  const out = {};
+  if (!raw || typeof raw !== "object")
+    return out;
+  let entries = 0;
+  for (const [key, value] of Object.entries(raw)) {
+    if (entries >= 1e3)
+      break;
+    if (typeof value !== "string")
+      continue;
+    if (key.length > 200)
+      continue;
+    let resolved;
+    try {
+      resolved = new URL(value, baseUrl).href;
+    } catch {
+      continue;
+    }
+    if (resolved.length > 8192)
+      continue;
+    out[key] = resolved;
+    entries++;
+  }
+  return out;
+}
 self.addEventListener("install", (event) => {
   event.waitUntil(
     Promise.all([
@@ -636,9 +775,14 @@ self.addEventListener("message", (event) => {
   if (!data || typeof data !== "object")
     return;
   if (data.type === "HANDSHAKE") {
-    knownImportmap = data.importmap ?? {};
-    const config = data.config;
-    knownConfig = config && typeof config === "object" ? config : {};
+    const clientUrl = event.source?.url ?? self.location.origin;
+    recordClientHandshake(event.source?.id ?? "");
+    recordClientHandshake(event.source?.id ?? "");
+    knownImportmap = sanitizeImportmap(data.importmap, clientUrl);
+    knownConfig = data.config && typeof data.config === "object" ? data.config : {};
+    limits = parseLimits(knownConfig.limits);
+    configVersion++;
+    resolveFirstHandshake?.();
     if (knownConfig.esbuildUrl) {
       fetch(knownConfig.esbuildUrl).then((response) => response.arrayBuffer()).catch(() => {
       });
@@ -653,7 +797,11 @@ self.addEventListener("message", (event) => {
       rawscriptVersion: RAWSCRIPT_VERSION
     });
   } else if (data.type === "IMPORTMAP") {
-    knownImportmap = data.importmap ?? {};
+    const clientUrl = event.source?.url ?? self.location.origin;
+    recordClientHandshake(event.source?.id ?? "");
+    knownImportmap = sanitizeImportmap(data.importmap, clientUrl);
+    configVersion++;
+    resolveFirstHandshake?.();
   } else if (data.type === "CACHE_BUST") {
     event.waitUntil(
       bustCache(data.url).then(() => {
@@ -700,26 +848,61 @@ async function getTsconfigState(pathname) {
   const jsxConfig = getJsxOptionsFromTsconfig(tsconfig) ?? getJsxConfig();
   return { tsconfig, jsxConfig };
 }
+function freshRequest(request) {
+  const busted = new URL(request.url);
+  busted.searchParams.set("rawscript-bust", String(Date.now()));
+  const headers = new Headers(request.headers);
+  for (const name of ["if-none-match", "if-modified-since", "if-unmodified-since", "if-match", "if-range"]) {
+    headers.delete(name);
+  }
+  return new Request(busted, { headers, cache: "no-store" });
+}
 async function handleFetch(event) {
   const url = new URL(event.request.url);
   const isGet = event.request.method === "GET";
+  if (event.clientId) {
+    try {
+      await withTimeout(waitForClientHandshake(event.clientId), HANDSHAKE_GRACE_MS, url.pathname);
+    } catch {
+    }
+  }
   if (isGet && isDependencyRequest(event.request, knownImportmap)) {
     const depsCache = await caches.open(DEPENDENCY_CACHE);
     const cachedDep = await depsCache.match(event.request);
-    if (cachedDep)
+    if (cachedDep && await isDependencyEntryValid(cachedDep))
       return cachedDep;
-    const depResponse = await fetch(event.request);
-    if (depResponse.ok) {
+    if (cachedDep) {
+      console.warn(`rawscript: dependency cache entry failed verification, refetching`, event.request.url);
+      await depsCache.delete(event.request);
+    }
+    const depResponse = await fetch(freshRequest(event.request));
+    const depContentType = depResponse.headers.get("content-type");
+    if (depResponse.ok && isCachableDependencyMime(depContentType)) {
       try {
-        await depsCache.put(event.request, depResponse.clone());
+        await putDependency(depsCache, event.request, depResponse);
+        return depResponse;
       } catch (err) {
         console.warn("rawscript: failed to cache dependency", event.request.url, err);
       }
     }
-    return depResponse;
+    const diagnostic = buildCompileDiagnostic({
+      file: event.request.url,
+      message: `dependency returned non-JavaScript response (${depContentType ?? "unknown"}) \u2014 not a valid JavaScript MIME type for module script`
+    });
+    return transpileErrorResponse(diagnostic);
   }
   if (isGet && url.pathname.startsWith(UNRESOLVED_PREFIX)) {
-    const specifier = decodeURIComponent(url.pathname.slice(UNRESOLVED_PREFIX.length));
+    let specifier;
+    try {
+      specifier = decodeURIComponent(url.pathname.slice(UNRESOLVED_PREFIX.length));
+    } catch {
+      const diagnostic2 = buildCompileDiagnostic({
+        file: url.pathname,
+        message: "malformed percent-encoding in unresolved specifier"
+      });
+      notifyClient({ type: "TRANSPILE_ERROR", ...diagnostic2 });
+      return transpileErrorResponse(diagnostic2);
+    }
     const diagnostic = buildCompileDiagnostic({
       file: specifier,
       message: `could not be resolved: no import map entry and CDN fallback is disabled`,
@@ -729,12 +912,19 @@ async function handleFetch(event) {
     return transpileErrorResponse(diagnostic);
   }
   const isTs = isGet && (url.pathname.endsWith(".ts") || url.pathname.endsWith(".tsx"));
-  if (!isTs)
-    return fetch(event.request);
+  if (!isTs) {
+    return fetch(freshRequest(event.request));
+  }
+  if (configVersion === 0) {
+    try {
+      await withTimeout(firstHandshake, HANDSHAKE_GRACE_MS, url.pathname);
+    } catch {
+    }
+  }
   let source;
   let fetched;
   try {
-    fetched = await fetch(event.request, { cache: "no-store" });
+    fetched = await fetch(freshRequest(event.request));
   } catch (err) {
     const cache2 = await caches.open(TRANSPILED_CACHE);
     const stale = await cache2.match(event.request);
@@ -748,6 +938,15 @@ async function handleFetch(event) {
     return fetched;
   }
   source = await fetched.text();
+  const sourceBytes = new TextEncoder().encode(source).length;
+  if (sourceBytes > limits.maxSourceBytes) {
+    const diagnostic = buildCompileDiagnostic({
+      file: url.pathname,
+      message: `Resource limit reached: source size ${sourceBytes} bytes exceeds maxSourceBytes (${limits.maxSourceBytes})`
+    });
+    notifyClient({ type: "TRANSPILE_ERROR", ...diagnostic });
+    return transpileErrorResponse(diagnostic);
+  }
   const { tsconfig, jsxConfig } = await getTsconfigState(url.pathname);
   const fingerprint = fnv1a(
     JSON.stringify({
@@ -789,12 +988,16 @@ async function handleFetch(event) {
         toTranspile = mapped;
     }
     recordModuleGraph(url.pathname, source);
-    const js = await transpileWith(
-      esbuild,
-      toTranspile,
-      url.pathname,
-      jsxConfig,
-      knownConfig
+    const js = await withTimeout(
+      transpileWith(
+        esbuild,
+        toTranspile,
+        url.pathname,
+        jsxConfig,
+        knownConfig
+      ),
+      limits.maxCompileMs,
+      url.pathname
     );
     const rewritten = rewriteImports(js, knownImportmap, knownConfig.cdn);
     const out = new Response(rewritten, {
@@ -806,6 +1009,7 @@ async function handleFetch(event) {
     });
     try {
       await cache.put(event.request, out.clone());
+      await enforceCacheCap(cache);
     } catch (err) {
       console.warn(`rawscript: failed to cache ${url.pathname}, serving without caching`, err);
     }
@@ -832,6 +1036,50 @@ async function isBodyIntact(cached) {
   } catch {
     return false;
   }
+}
+async function isDependencyEntryValid(cached) {
+  if (!cached.ok)
+    return false;
+  const contentType = cached.headers.get("content-type");
+  if (!isCachableDependencyMime(contentType))
+    return false;
+  try {
+    const body = await cached.clone().arrayBuffer();
+    const bodyHash = fnv1aBytes(new Uint8Array(body));
+    const storedHash = cached.headers.get(BODY_HASH_HEADER);
+    return bodyHash === storedHash;
+  } catch {
+    return false;
+  }
+}
+async function putDependency(cache, request, response) {
+  const body = await response.clone().arrayBuffer();
+  const bodyHash = fnv1aBytes(new Uint8Array(body));
+  const out = new Response(body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: {
+      "Content-Type": response.headers.get("content-type") ?? "application/octet-stream",
+      [BODY_HASH_HEADER]: bodyHash
+    }
+  });
+  await cache.put(request, out);
+}
+async function enforceCacheCap(cache) {
+  const keys = await cache.keys();
+  if (keys.length > 500) {
+    for (let i = 0; i < keys.length - 500; i++) {
+      await cache.delete(keys[i]);
+    }
+  }
+}
+async function withTimeout(promise, ms, context) {
+  return Promise.race([
+    promise,
+    new Promise(
+      (_, reject) => setTimeout(() => reject(new Error(`timeout (${ms}ms) in ${context}`)), ms)
+    )
+  ]);
 }
 function recordModuleGraph(modulePath, rewritten) {
   if (moduleGraph.size > 2e4)

@@ -1,53 +1,32 @@
 name: Publish
 
 on:
-  push:
-    tags:
-      - 'v*'
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+  packages: write
+  attestations: write
+  id-token: write
 
 jobs:
   publish:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write
     steps:
       - uses: actions/checkout@v4
-
-      - uses: pnpm/action-setup@v4
-
-      - uses: actions/setup-node@v4
+      - uses: pnpm/action-setup@v2
         with:
-          node-version: 24
-          registry-url: https://registry.npmjs.org
-          cache: pnpm
+          version: 9
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
 
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+      - name: Verify packed contents
+        run: |
+          pnpm pack --dry-run 2>&1 | head -20
+          pnpm pack --dry-run 2>&1 | grep -E 'rawscript\.js|rawscript-sw\.js|cli\.mjs' || exit 1
 
-      - name: Typecheck
-        run: pnpm typecheck
-
-      - name: Build runtime
-        run: pnpm build
-
-      - name: Build CLI
-        run: pnpm --filter rawscript-cli build
-
-      - name: Install Playwright browsers
-        run: npx playwright install --with-deps chromium firefox webkit
-
-      - name: Test
-        run: pnpm test
-
-      - name: Publish rawscript
-        working-directory: packages/runtime
-        run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
-      - name: Publish rawscript-cli
-        working-directory: packages/cli
-        run: npm publish --provenance --access public
+      - name: Publish to npm with provenance
+        run: pnpm publish --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

@@ -17,7 +17,7 @@
 import { program } from 'commander'
 import * as path from 'path'
 import { build } from './bundler.js'
-import { serve, serveDir } from './serve.js'
+import { serve, serveDir, CspMode } from './serve.js'
 import { runTypecheck } from './typecheck.js'
 import { generateDeps } from './deps.js'
 import { vendor, ESBUILD_WASM_VERSION } from './vendor.js'
@@ -73,8 +73,9 @@ program
   .command('serve')
   .description('Static file server for the current directory, no config')
   .option('--port <number>', 'Port to serve on', '3000')
+  .option('--csp <mode>', 'Content-Security-Policy mode: off, default, strict', 'off')
   .action(async (options) => {
-    await serve(parseInt(options.port, 10))
+    await serve(parseInt(options.port, 10), options.csp as CspMode)
   })
 
 program
@@ -82,8 +83,9 @@ program
   .description('Serve a production output directory exactly as it would be deployed')
   .option('--dir <path>', 'Output directory to serve', 'dist')
   .option('--port <number>', 'Port to serve on', '3000')
+  .option('--csp <mode>', 'Content-Security-Policy mode: off, default, strict', 'off')
   .action(async (options) => {
-    serveDir(path.resolve(options.dir), parseInt(options.port, 10), 'preview')
+    serveDir(path.resolve(options.dir), parseInt(options.port, 10), 'preview', options.csp as CspMode)
   })
 
 program

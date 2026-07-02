@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>rawscript — security fixture: generous limits keep rendering</title>
+  <script>
+    window.rawscriptConfig = {
+      limits: { maxSourceBytes: 50000, maxModules: 5000, maxCompileMs: 60000, maxCachedModules: 2000 },
+    }
+  </script>
+  <script src="/dist/rawscript.js"></script>
+</head>
+<body>
+  <div id="out"></div>
+  <script type="module" src="./main.ts"></script>
+</body>
+</html>

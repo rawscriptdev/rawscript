@@ -26,6 +26,8 @@
  *   production honesty).
  */
 
+import { RawscriptLimits } from './limits'
+
 export interface RawscriptCdnConfig {
   /** CDN base used to rewrite unmapped bare imports (default esm.sh). */
   base?: string
@@ -40,6 +42,8 @@ export interface RawscriptConfig {
   esbuildUrl?: string
   /** Dependency CDN fallback configuration. */
   cdn?: RawscriptCdnConfig
+  /** Resource limits for the in-browser compiler (clamped to hard ceilings). */
+  limits?: RawscriptLimits
 }
 
 export const DEFAULT_WASM_URL = 'https://unpkg.com/esbuild-wasm@0.20.2/esbuild.wasm'
@@ -61,6 +65,9 @@ export function readConfig(): RawscriptConfig {
     if (typeof cdn.base === 'string') cdnOut.base = cdn.base
     if (typeof cdn.enabled === 'boolean') cdnOut.enabled = cdn.enabled
     out.cdn = cdnOut
+  }
+  if (raw.limits && typeof raw.limits === 'object' && !Array.isArray(raw.limits)) {
+    out.limits = raw.limits as RawscriptLimits
   }
   return out
 }

@@ -45,10 +45,10 @@ for (const [input, expected] of cases) {
   })
 }
 
-test('rewriteImports: importmap-mapped specifiers are left alone', () => {
+test('rewriteImports: importmap-mapped specifiers are resolved to the map value', () => {
   const input = "import { a } from 'react'"
   const map = { react: 'https://cdn.example.com/react.js' }
-  assert.equal(rewriteImports(input, map), input)
+  assert.equal(rewriteImports(input, map), "import { a } from 'https://cdn.example.com/react.js'")
 })
 
 test('rewriteImports: unmapped specifiers are rewritten even when a map exists', () => {
@@ -83,10 +83,10 @@ test('rewriteImports: cdn disabled rewrites unmapped specifiers to the unresolve
   )
 })
 
-test('rewriteImports: cdn disabled never touches importmap-mapped specifiers', () => {
+test('rewriteImports: cdn disabled still resolves importmap-mapped specifiers', () => {
   const input = "import { a } from 'react'"
   const map = { react: 'https://cdn.example.com/react.js' }
-  assert.equal(rewriteImports(input, map, { enabled: false }), input)
+  assert.equal(rewriteImports(input, map, { enabled: false }), "import { a } from 'https://cdn.example.com/react.js'")
 })
 
 test('rewriteImports: cdn disabled still rewrites relative and URL specifiers untouched', () => {

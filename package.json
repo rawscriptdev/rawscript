@@ -1,7 +1,7 @@
 {
   "name": "rawscript-monorepo",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
   "packageManager": "pnpm@9.0.0",
   "scripts": {
@@ -12,9 +12,12 @@
     "test:unit": "node --test \"tests/unit/*.test.ts\"",
     "test:e2e": "playwright test --project=chromium --project=firefox && playwright test --project=webkit --workers=1",
     "bench": "node benchmarks/run.mjs",
-    "typecheck": "pnpm -r typecheck"
+    "typecheck": "pnpm -r typecheck",
+    "audit": "pnpm audit --prod --audit-level high",
+    "sbom": "cyclonedx-npm --output-file SBOM.json --short-PURLs --ignore-npm-errors"
   },
   "devDependencies": {
-    "@playwright/test": "^1.49.0"
+    "@playwright/test": "^1.49.0",
+    "@cyclonedx/cyclonedx-npm": "^5.0.0"
   }
 }

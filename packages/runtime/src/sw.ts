@@ -25,7 +25,7 @@ import * as esbuild from 'https://unpkg.com/esbuild-wasm@0.20.2/esm/browser.js'
 import { DEFAULT_ESBUILD_URL } from './config.js'
 import { rewriteImports, mapBareImports, collectImportSpecifiers, UNRESOLVED_PREFIX } from './resolver.js'
 import type { RawscriptConfig } from './config.js'
-import { fnv1a } from './hash.js'
+import { fnv1a, fnv1aBytes } from './hash.js'
 import { RAWSCRIPT_VERSION, SW_PROTOCOL_VERSION } from './version.js'
 import { buildCompileDiagnostic, type CompileDiagnostic } from './diagnostics.js'
 import {
@@ -35,6 +35,7 @@ import {
   unsupportedOptionWarnings,
   type TsConfig,
 } from './tsconfig.js'
+import { parseLimits, isCachableDependencyMime, RawscriptLimits, DEFAULT_LIMITS } from './limits.js'
 
 const TRANSPILED_CACHE = 'rawscript-transpiled-v2'
 const META_CACHE = 'rawscript-meta-v1'
@@ -47,11 +48,84 @@ const FORMAT = 'esm'
 
 let knownImportmap: Record<string, string> = {}
 let knownConfig: RawscriptConfig = {}
+let limits: RawscriptLimits = { ...DEFAULT_LIMITS }
 let configState: { tsconfig: TsConfig | null; at: number } | null = null
 const CONFIG_TTL_MS = 5000
+let configVersion = 0
+
+// Resolved by the first page handshake. Module scripts execute at
+// DOMContentLoaded while postMessage delivery is asynchronous — a .ts fetch
+// that races ahead of the handshake must not compile with an empty import
+// map, so compileTs awaits this (bounded) before transpiling.
+let resolveFirstHandshake: (() => void) | null = null
+const firstHandshake = new Promise<void>((resolve) => {
+  resolveFirstHandshake = resolve
+})
+const HANDSHAKE_GRACE_MS = 1000
+
+/**
+ * Per-client handshake tracking. Every navigation creates a NEW client, and
+ * the reloaded page re-sends its handshake — a compile that races ahead of it
+ * would use the previous navigation's importmap/config (stale self-hosted
+ * dependency mappings, wrong limits). handleFetch awaits the CURRENT client's
+ * handshake (bounded) before transpiling; clients that never handshake fall
+ * back to the current state after the grace period.
+ */
+const handshakeClients = new Set<string>()
+const pendingClientHandshakes = new Map<string, () => void>()
+const clientHandshakePromises = new Map<string, Promise<void>>()
+
+function waitForClientHandshake(clientId: string): Promise<void> {
+  if (handshakeClients.has(clientId)) return Promise.resolve()
+  const existing = clientHandshakePromises.get(clientId)
+  if (existing) return existing
+  let resolve!: () => void
+  const promise = new Promise<void>((r) => {
+    resolve = r
+  })
+  pendingClientHandshakes.set(clientId, resolve)
+  clientHandshakePromises.set(clientId, promise)
+  return promise
+}
+
+function recordClientHandshake(clientId: string): void {
+  if (!clientId) return
+  handshakeClients.add(clientId)
+  const resolve = pendingClientHandshakes.get(clientId)
+  pendingClientHandshakes.delete(clientId)
+  clientHandshakePromises.delete(clientId)
+  resolve?.()
+}
 
 /** Module graph: imported module path -> importer path (for error chains). */
 const moduleGraph = new Map<string, string>()
+
+/**
+ * Sanitize and resolve the raw import map from the page. Relative values are
+ * resolved against the client page's URL so self-hosted dependencies like
+ * `./dep.js` are correctly mapped and enter the dependency cache.
+ * Entries exceeding hard limits are dropped.
+ */
+function sanitizeImportmap(raw: unknown, baseUrl: string): Record<string, string> {
+  const out: Record<string, string> = {}
+  if (!raw || typeof raw !== 'object') return out
+  let entries = 0
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (entries >= 1000) break
+    if (typeof value !== 'string') continue
+    if (key.length > 200) continue
+    let resolved: string
+    try {
+      resolved = new URL(value, baseUrl).href
+    } catch {
+      continue
+    }
+    if (resolved.length > 8192) continue
+    out[key] = resolved
+    entries++
+  }
+  return out
+}
 
 self.addEventListener('install', (event) => {
   // Never fail installation because the WASM pre-cache is unreachable — it
@@ -147,9 +221,14 @@ self.addEventListener('message', (event: ExtendableMessageEvent) => {
   const data = event.data
   if (!data || typeof data !== 'object') return
   if (data.type === 'HANDSHAKE') {
-    knownImportmap = data.importmap ?? {}
-    const config = data.config
-    knownConfig = config && typeof config === 'object' ? (config as RawscriptConfig) : {}
+    const clientUrl = (event.source as WindowClient | null)?.url ?? self.location.origin
+    recordClientHandshake((event.source as WindowClient | null)?.id ?? '')
+    recordClientHandshake((event.source as WindowClient | null)?.id ?? '')
+    knownImportmap = sanitizeImportmap(data.importmap, clientUrl)
+    knownConfig = data.config && typeof data.config === 'object' ? (data.config as RawscriptConfig) : {}
+    limits = parseLimits(knownConfig.limits)
+    configVersion++
+    resolveFirstHandshake?.()
     // Warm the HTTP cache for a configured self-hosted compiler shim and the
     // WASM binary for a configured self-hosted compiler, so an offline reload
     // re-imports/re-initializes without the network (best-effort, silent).
@@ -175,7 +254,11 @@ self.addEventListener('message', (event: ExtendableMessageEvent) => {
     })
   } else if (data.type === 'IMPORTMAP') {
     // Backwards-compatible with older pages that only send the importmap.
-    knownImportmap = data.importmap ?? {}
+    const clientUrl = (event.source as WindowClient | null)?.url ?? self.location.origin
+    recordClientHandshake((event.source as WindowClient | null)?.id ?? '')
+    knownImportmap = sanitizeImportmap(data.importmap, clientUrl)
+    configVersion++
+    resolveFirstHandshake?.()
   } else if (data.type === 'CACHE_BUST') {
     event.waitUntil(
       bustCache(data.url).then(() => {
@@ -239,6 +322,24 @@ async function getTsconfigState(pathname: string): Promise<{ tsconfig: TsConfig 
   return { tsconfig, jsxConfig }
 }
 
+/**
+ * Rebuild a request for an unconditional network fetch: conditional headers
+ * are stripped (a stale pre-SW copy in the browser HTTP cache must never
+ * short-circuit into a 304) and the URL gets a fresh cache-busting query
+ * parameter so the HTTP cache cannot answer from a pre-SW body even when a
+ * browser ignores `cache: 'no-store'` inside the service worker. The server
+ * strips query strings, so this never affects routing.
+ */
+function freshRequest(request: Request): Request {
+  const busted = new URL(request.url)
+  busted.searchParams.set('rawscript-bust', String(Date.now()))
+  const headers = new Headers(request.headers)
+  for (const name of ['if-none-match', 'if-modified-since', 'if-unmodified-since', 'if-match', 'if-range']) {
+    headers.delete(name)
+  }
+  return new Request(busted, { headers, cache: 'no-store' })
+}
+
 async function handleFetch(event: FetchEvent): Promise<Response> {
   const url = new URL(event.request.url)
   const isGet = event.request.method === 'GET'
@@ -247,28 +348,72 @@ async function handleFetch(event: FetchEvent): Promise<Response> {
   // third-party URLs such as esm.sh — are cache-first. A served copy keeps
   // offline reloads of an already-loaded module graph working. Unmapped
   // same-origin requests and TS sources fall through to normal handling.
+
+  // Wait (bounded) for the CURRENT client's handshake BEFORE classifying the
+  // request: a reloaded page re-sends its handshake, and classifying (or
+  // transpiling) with the previous navigation's import map would treat a
+  // self-hosted dependency remapped by the new page as a plain fetch (raw
+  // HTML served as a module) or transpile with the wrong state. Clients that
+  // never handshake proceed with the current state after the grace period.
+  if (event.clientId) {
+    try {
+      await withTimeout(waitForClientHandshake(event.clientId), HANDSHAKE_GRACE_MS, url.pathname)
+    } catch {
+      // proceed with current state; the request is still served
+    }
+  }
+
   if (isGet && isDependencyRequest(event.request, knownImportmap)) {
     const depsCache = await caches.open(DEPENDENCY_CACHE)
     const cachedDep = await depsCache.match(event.request)
-    if (cachedDep) return cachedDep
-    const depResponse = await fetch(event.request)
-    if (depResponse.ok) {
+    if (cachedDep && (await isDependencyEntryValid(cachedDep))) return cachedDep
+    if (cachedDep) {
+      console.warn(`rawscript: dependency cache entry failed verification, refetching`, event.request.url)
+      await depsCache.delete(event.request)
+    }
+    // Bypass the HTTP cache for the same reason the transpile path does:
+    // the browser may hold a pre-SW copy of this dependency URL, and serving
+    // it (or a stale 304 revalidation) would smuggle an unverified body past
+    // the hash-stamped cache-first design.
+    const depResponse = await fetch(freshRequest(event.request))
+    const depContentType = depResponse.headers.get('content-type')
+    if (depResponse.ok && isCachableDependencyMime(depContentType)) {
       try {
-        await depsCache.put(event.request, depResponse.clone())
+        await putDependency(depsCache, event.request, depResponse)
+        return depResponse
       } catch (err) {
-        // Quota/write failure is non-fatal: the dependency simply is not
-        // cached this time.
         console.warn('rawscript: failed to cache dependency', event.request.url, err)
       }
     }
-    return depResponse
+    // Non-cachable dependency (e.g. HTML from poisoned upstream). Return a
+    // structured error module so the import throws a meaningful diagnostic
+    // instead of Firefox's "SW unexpected error" for non-JS responses. The
+    // message mirrors the browser's own MIME phrasing so tests (and users)
+    // recognize it as a MIME rejection.
+    const diagnostic = buildCompileDiagnostic({
+      file: event.request.url,
+      message: `dependency returned non-JavaScript response (${depContentType ?? 'unknown'}) — not a valid JavaScript MIME type for module script`,
+    })
+    return transpileErrorResponse(diagnostic)
   }
 
   // Unmapped bare imports with CDN fallback disabled are rewritten to a
   // reserved path. Answer them with a module that throws a structured,
   // actionable diagnostic instead of a raw 404 (roadmap section 20).
   if (isGet && url.pathname.startsWith(UNRESOLVED_PREFIX)) {
-    const specifier = decodeURIComponent(url.pathname.slice(UNRESOLVED_PREFIX.length))
+    let specifier: string
+    try {
+      specifier = decodeURIComponent(url.pathname.slice(UNRESOLVED_PREFIX.length))
+    } catch {
+      // Malformed percent-encoding must never crash the SW's fetch handler;
+      // answer with a structured error module instead.
+      const diagnostic = buildCompileDiagnostic({
+        file: url.pathname,
+        message: 'malformed percent-encoding in unresolved specifier',
+      })
+      notifyClient({ type: 'TRANSPILE_ERROR', ...diagnostic })
+      return transpileErrorResponse(diagnostic)
+    }
     const diagnostic = buildCompileDiagnostic({
       file: specifier,
       message: `could not be resolved: no import map entry and CDN fallback is disabled`,
@@ -280,14 +425,30 @@ async function handleFetch(event: FetchEvent): Promise<Response> {
 
   const isTs = isGet && (url.pathname.endsWith('.ts') || url.pathname.endsWith('.tsx'))
 
-  if (!isTs) return fetch(event.request)
+  // Non-TS responses are proxied as-is. Bypass the HTTP cache (and strip
+  // conditional headers) for the same reason the transpile path does: a
+  // pre-SW copy of the URL or a stale 304 revalidation would serve an
+  // unverified body — e.g. a dependency that was NOT classified as one
+  // because the handshake arrived a moment late. The SW's caches are the
+  // only cache layer.
+  if (!isTs) {
+    return fetch(freshRequest(event.request))
+  }
+
+  if (configVersion === 0) {
+    try {
+      await withTimeout(firstHandshake, HANDSHAKE_GRACE_MS, url.pathname)
+    } catch {
+      // proceed with default state; the request is still served
+    }
+  }
 
   // Always fetch the current source (no HTTP cache) so the fingerprint is
   // content-aware: source edits are picked up without a manual cache bust.
   let source: string
   let fetched: Response
   try {
-    fetched = await fetch(event.request, { cache: 'no-store' })
+    fetched = await fetch(freshRequest(event.request))
   } catch (err) {
     // Network failure: serve a stale cached entry when one exists rather
     // than trapping the page offline. A warning is logged so the situation
@@ -306,6 +467,20 @@ async function handleFetch(event: FetchEvent): Promise<Response> {
     return fetched
   }
   source = await fetched.text()
+
+  // Resource limits (roadmap section 25): a single source over the configured
+  // maxSourceBytes is refused with a structured diagnostic before the body is
+  // compiled or cached — the floor in parseLimits makes tiny test values
+  // clamp up, but any page-configurable limit is enforced here.
+  const sourceBytes = new TextEncoder().encode(source).length
+  if (sourceBytes > limits.maxSourceBytes) {
+    const diagnostic = buildCompileDiagnostic({
+      file: url.pathname,
+      message: `Resource limit reached: source size ${sourceBytes} bytes exceeds maxSourceBytes (${limits.maxSourceBytes})`,
+    })
+    notifyClient({ type: 'TRANSPILE_ERROR', ...diagnostic })
+    return transpileErrorResponse(diagnostic)
+  }
 
   const { tsconfig, jsxConfig } = await getTsconfigState(url.pathname)
   const fingerprint = fnv1a(
@@ -354,12 +529,16 @@ async function handleFetch(event: FetchEvent): Promise<Response> {
     // failing module's importers are already known when its error is raised.
     recordModuleGraph(url.pathname, source)
 
-    const js = await transpileWith(
-      esbuild as unknown as EsbuildApi,
-      toTranspile,
-      url.pathname,
-      jsxConfig,
-      knownConfig
+    const js = await withTimeout(
+      transpileWith(
+        esbuild as unknown as EsbuildApi,
+        toTranspile,
+        url.pathname,
+        jsxConfig,
+        knownConfig
+      ),
+      limits.maxCompileMs,
+      url.pathname
     )
     const rewritten = rewriteImports(js, knownImportmap, knownConfig.cdn)
 
@@ -372,6 +551,7 @@ async function handleFetch(event: FetchEvent): Promise<Response> {
     })
     try {
       await cache.put(event.request, out.clone())
+      await enforceCacheCap(cache)
     } catch (err) {
       // Quota or write failure must never break serving — the entry is
       // simply not cached this time (corrupt-cache recovery, section 14).
@@ -401,6 +581,57 @@ async function isBodyIntact(cached: Response): Promise<boolean> {
   } catch {
     return false
   }
+}
+
+/** Verify a dependency cache entry: must be 200 OK, allowlisted MIME, and body hash matches. */
+async function isDependencyEntryValid(cached: Response): Promise<boolean> {
+  if (!cached.ok) return false
+  const contentType = cached.headers.get('content-type')
+  if (!isCachableDependencyMime(contentType)) return false
+  try {
+    const body = await cached.clone().arrayBuffer()
+    const bodyHash = fnv1aBytes(new Uint8Array(body))
+    const storedHash = cached.headers.get(BODY_HASH_HEADER)
+    return bodyHash === storedHash
+  } catch {
+    return false
+  }
+}
+
+/** Store a dependency response in the cache-first dependency cache with body hash. */
+async function putDependency(cache: Cache, request: Request, response: Response): Promise<void> {
+  const body = await response.clone().arrayBuffer()
+  const bodyHash = fnv1aBytes(new Uint8Array(body))
+  const out = new Response(body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: {
+      'Content-Type': response.headers.get('content-type') ?? 'application/octet-stream',
+      [BODY_HASH_HEADER]: bodyHash,
+    },
+  })
+  await cache.put(request, out)
+}
+
+/** Evict oldest entries when the dependency cache exceeds its cap. */
+async function enforceCacheCap(cache: Cache): Promise<void> {
+  const keys = await cache.keys()
+  if (keys.length > 500) {
+    // Evict oldest (by insertion order approximation)
+    for (let i = 0; i < keys.length - 500; i++) {
+      await cache.delete(keys[i])
+    }
+  }
+}
+
+/** Time-bounded helper for async operations with context in timeout messages. */
+async function withTimeout<T>(promise: Promise<T>, ms: number, context: string): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error(`timeout (${ms}ms) in ${context}`)), ms)
+    ),
+  ])
 }
 
 /** Record module -> imports so diagnostics can show the dependency chain. */

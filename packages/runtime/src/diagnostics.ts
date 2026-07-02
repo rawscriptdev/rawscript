@@ -37,7 +37,7 @@ export function classifyError(message: string): string {
   if (/Could not resolve|not resolved|not be resolved|does not provide an export/.test(message)) {
     return 'Module resolution error'
   }
-  if (/Syntax error|Expected|Unexpected|Parse|Missing/.test(message)) return 'Syntax error'
+  if (/Syntax error|Expected|Unexpected|Parse|Missing|Unterminated/.test(message)) return 'Syntax error'
   if (/No matching export|does not provide an export|no exported member/.test(message)) {
     return 'Import error'
   }
@@ -67,7 +67,7 @@ export function fixForError(message: string): string {
       'of the imported file, or remove the named import.'
     )
   }
-  if (/Syntax error|Expected|Unexpected|Missing/i.test(message)) {
+  if (/Syntax error|Expected|Unexpected|Missing|Unterminated/i.test(message)) {
     return (
       'Look at the marked line: a bracket, brace, parenthesis, quote, or semicolon is ' +
       'missing or duplicated. If the error is in generated code, the original source ' +

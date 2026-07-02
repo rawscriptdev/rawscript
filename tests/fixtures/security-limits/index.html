@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>rawscript — security fixture: source size limit enforced</title>
+  <script>
+    window.rawscriptConfig = {
+      limits: { maxSourceBytes: 1024 },
+    }
+  </script>
+  <script src="/dist/rawscript.js"></script>
+</head>
+<body>
+  <div id="out"></div>
+  <script type="module" src="./main.ts"></script>
+</body>
+</html>

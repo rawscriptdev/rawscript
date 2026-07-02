@@ -40,6 +40,7 @@ export class ErrorOverlay {
 
   private createOverlay(): HTMLElement {
     const overlay = document.createElement('div')
+    overlay.className = 'rawscript-error-overlay'
     overlay.style.position = 'fixed'
     overlay.style.top = '0'
     overlay.style.left = '0'
@@ -104,6 +105,7 @@ export class ErrorOverlay {
 
         <div style="margin-top: 1rem; text-align: left; width: 100%;">
           <button
+            class="rawscript-error-dismiss"
             style="background: #3b82f6; color: white; border: none; padding: 0.75rem 1.5rem; border-radius: 4px; font-size: 0.875rem; cursor: pointer;"
           >
             Dismiss
@@ -117,7 +119,7 @@ export class ErrorOverlay {
     closeBtn?.addEventListener('click', () => this.hide())
 
     // Dismiss button
-    const dismissBtn = overlay.querySelector('div[style*="margin-top: 1rem"] button')
+    const dismissBtn = overlay.querySelector('.rawscript-error-dismiss')
     dismissBtn?.addEventListener('click', () => this.hide())
 
     // Code frame: prefer the structured frame, else fetch the source file

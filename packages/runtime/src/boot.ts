@@ -218,4 +218,24 @@ function onReady(): void {
   }
 }
 
+/**
+ * Eager handshake: module scripts are fetched at parse time, BEFORE
+ * DOMContentLoaded — a main.ts fetch can reach the Service Worker before the
+ * page's handshake, and the SW would then classify requests with the PREVIOUS
+ * navigation's importmap (stale self-hosted dependency mappings, wrong
+ * limits). When the runtime script runs after the importmap (and config)
+ * element, send the handshake immediately so the SW has the current map
+ * before the first module fetch. Pages that load the importmap later rely on
+ * the SW's bounded handshake grace instead.
+ */
+function sendEagerHandshake(): void {
+  if (!('serviceWorker' in navigator)) return
+  const controller = navigator.serviceWorker.controller
+  if (!controller) return
+  if (!document.querySelector('script[type="importmap"]')) return
+  sendHandshake(controller)
+}
+
+sendEagerHandshake()
+
 onReady()

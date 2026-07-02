@@ -255,7 +255,14 @@ export function rewriteImports(
   const map = importmap ?? {}
   const cdnOptions: CdnOptions = { enabled: true, base: ESM_SH, ...cdn }
   return mapBareImports(js, (specifier) => {
-    if (specifier in map) return null
+    if (specifier in map) {
+      // Mapped specifiers are rewritten to their import map URL here instead
+      // of being left for the browser's native import map: under strict CSP
+      // the import map element itself is blocked (script-src), so the SW —
+      // which already classifies and serves those requests — must resolve the
+      // mapping itself. Relative values resolve against the importing module.
+      return map[specifier]
+    }
     if (!cdnOptions.enabled) return unresolvedImportUrl(specifier)
     return cdnOptions.base + specifier
   })

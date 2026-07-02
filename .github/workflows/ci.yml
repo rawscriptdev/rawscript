@@ -2,39 +2,81 @@ name: CI
 
 on:
   push:
-    branches: [main, develop]
+    branches: [main]
   pull_request:
+    branches: [main]
 
 jobs:
-  build-test:
+  typecheck:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - uses: pnpm/action-setup@v4
-
-      - uses: actions/setup-node@v4
+      - uses: pnpm/action-setup@v2
         with:
-          node-version: 24
-          cache: pnpm
+          version: 9
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
 
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+  build:
+    runs-on: ubuntu-latest
+    needs: typecheck
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v2
+        with:
+          version: 9
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
 
-      - name: Typecheck
-        run: pnpm typecheck
+  unit:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v2
+        with:
+          version: 9
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test:unit
 
-      - name: Build runtime
-        run: pnpm build
+  audit:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v2
+        with:
+          version: 9
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm audit --prod --audit-level high
 
-      - name: Build CLI
-        run: pnpm --filter rawscript-cli build
+  e2e:
+    runs-on: ubuntu-latest
+    needs: build
+    strategy:
+      matrix:
+        browser: [chromium, firefox]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v2
+        with:
+          version: 9
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: pnpm --filter rawscript-cli build
+      - run: npx playwright install --with-deps chromium firefox
+      - run: npx playwright test --project=${{ matrix.browser }}
 
-      - name: Install Playwright browsers
-        run: npx playwright install --with-deps chromium firefox webkit
-
-      - name: Run unit tests
-        run: pnpm test:unit
-
-      - name: Run e2e tests
-        run: pnpm test:e2e
+  e2e-webkit:
+    runs-on: macos-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v2
+        with:
+          version: 9
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: pnpm --filter rawscript-cli build
+      - run: npx playwright install --with-deps webkit
+      - run: npx playwright test --project=webkit --workers=1
