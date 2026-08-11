@@ -16,6 +16,21 @@ That is the entire setup. `main.ts` can use TypeScript syntax, import from npm, 
 
 ---
 
+## Documentation
+
+- [Production guide](./docs/PRODUCTION.md) — CLI builds, dependency
+  strategies, deployment, offline behavior
+- [Troubleshooting](./docs/TROUBLESHOOTING.md) — error categories and
+  recovery for every common failure
+- [Browser support](./docs/BROWSER-SUPPORT.md) — the tested CI matrix and
+  known limits
+- [Security guide](./docs/SECURITY.md) — tested guarantees, CSP modes,
+  strict resolution, supply chain
+- [Benchmarks](./docs/BENCHMARKS.md) — measured performance, methodology,
+  latest baseline
+
+---
+
 ## How it works
 
 rawscript registers a [Service Worker](https://developer.mozilla.org/en-US/docs/Web/API/Service_Worker_API) that intercepts every `.ts` and `.tsx` network request before it reaches the browser's module loader. The SW fetches the raw source, compiles it in-browser using [esbuild-wasm](https://esbuild.github.io/getting-started/#wasm), rewrites bare specifiers to [esm.sh](https://esm.sh) CDN URLs, and returns the result as `application/javascript`.
@@ -72,7 +87,7 @@ rawscript detects the JSX transform from your importmap.
 
 Vue `.vue` SFC files are not supported. Use the Composition API with `.ts` files and `h()`.
 
-See [`examples/`](./examples) for working demos of each.
+See [`examples/`](./examples) for working demos of each framework, plus an [offline-first](./examples/offline-first/) reference app that keeps rendering when esm.sh and unpkg are unreachable.
 
 ---
 
@@ -153,7 +168,7 @@ rawscript/
 │       └── build.mjs         # bundles the CLI into a single self-contained dist/cli.mjs
 ├── scripts/serve.mjs         # static server used by the e2e suite
 ├── tests/                    # Playwright e2e (smoke, jsx, examples, cli) + resolver units
-└── examples/                 # vanilla, react, preact, solid, vue, three
+└── examples/                 # vanilla, react, preact, solid, vue, three, offline-first
 ```
 
 **The invariant that must never break:** `packages/runtime/package.json` → `"dependencies": {}`. The runtime is static files served from a CDN. It has no install step because it imposes no install step.
@@ -162,8 +177,8 @@ rawscript/
 
 | File | Format | Entry | Size |
 |---|---|---|---|
-| `dist/rawscript.js` | IIFE | `boot.ts` | ~31KB (minified, ~9KB gz) |
-| `dist/rawscript-sw.js` | ESM | `sw.ts` | ~9KB (esbuild-wasm imported externally) |
+| `dist/rawscript.js` | IIFE | `boot.ts` | ~38KB (minified, ~10KB gz) |
+| `dist/rawscript-sw.js` | ESM | `sw.ts` | ~38KB (esbuild-wasm imported externally) |
 
 `rawscript.js` is the script tag users include. It registers the SW and handles the initial reload. `rawscript-sw.js` is registered at `/rawscript-sw.js` by default and does all the actual work.
 
