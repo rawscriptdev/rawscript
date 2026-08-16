@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Questions and discussion
+    url: https://github.com/rawscript-dev/rawscript/discussions
+    about: Ask how-to questions, share projects built with rawscript, or discuss ideas before opening an issue.
+  - name: Security
+    url: https://github.com/rawscript-dev/rawscript/security
+    about: Report vulnerabilities privately. Do not open public issues for security problems.

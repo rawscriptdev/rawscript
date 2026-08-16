@@ -1,0 +1,35 @@
+name: Feature request
+description: Suggest a feature for rawscript
+labels: [feature]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before requesting: rawscript deliberately has a small feature
+        surface (see "Features that must not be deferred" in the roadmap).
+        The best requests describe a **real problem you hit**, not just a
+        feature name.
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What did you try to do, and what got in the way? Include your setup (framework, server, deployment).
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: How could rawscript solve it? A concrete API/config shape helps.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you tried
+      description: e.g. workarounds, other tools, self-hosting knobs already available.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Fit
+      options:
+        - label: I understand rawscript's zero-config runtime is the product and must not become mandatory to use the CLI
+        - label: I understand this should not make rawscript a second Vite or a second npm

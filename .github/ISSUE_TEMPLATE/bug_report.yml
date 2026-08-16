@@ -1,0 +1,50 @@
+name: Bug report
+description: Report a reproducible problem with rawscript
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug. A minimal reproduction is
+        the fastest way to get it fixed. If this is a security issue, report
+        it privately to security@rawscript.dev instead.
+  - type: input
+    id: browser
+    attributes:
+      label: Browser + version
+      description: e.g. Chrome 126, Firefox 127, Safari 17.5
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Where does it happen?
+      options:
+        - Browser runtime (dev, zero-config)
+        - CLI build / preview / deps / vendor
+        - Self-hosted deployment
+        - Service Worker / caching behavior
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Include the HTML/TS you used, the server setup, and what you expected vs. what happened.
+      placeholder: |
+        1. Serve this index.html...
+        2. Open in browser...
+        3. See the overlay/console error...
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Rawscript diagnostics
+      description: Paste the overlay's WHAT/WHERE/WHY/HOW text, and the browser console output (including any [rawscript] messages).
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything else
+      description: Offline? Corporate proxy? Extended CSP? Previously worked in version X?
