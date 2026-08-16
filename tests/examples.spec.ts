@@ -11,6 +11,7 @@ const examples: Array<{
   { name: 'preact', path: '/examples/preact/', locator: 'h1', text: 'rawscript + Preact' },
   { name: 'solid', path: '/examples/solid/', locator: 'h1', text: 'rawscript + Solid' },
   { name: 'vue', path: '/examples/vue/', locator: 'h1', text: 'rawscript + Vue' },
+  { name: 'offline-first', path: '/examples/offline-first/', locator: 'h1', text: 'rawscript offline-first' },
   {
     name: 'three',
     path: '/examples/three/',
@@ -50,4 +51,20 @@ test.describe('framework examples render', () => {
       expect(pageErrors.filter((e) => !transientMime.test(e))).toEqual([])
     })
   }
+
+  test('offline-first example survives a reload with CDNs unreachable', async ({ page }) => {
+    const pageErrors: string[] = []
+    page.on('pageerror', (err) => pageErrors.push(err.message))
+
+    await page.goto('/examples/offline-first/')
+    const heading = page.locator('h1')
+    await expect(heading).toHaveText('rawscript offline-first', { timeout: 60_000 })
+
+    await page.route(/esm\.sh|unpkg\.com/, (route) => route.abort())
+    await page.reload()
+    await expect(heading).toHaveText('rawscript offline-first', { timeout: 60_000 })
+
+    const transientMime = /not a valid JavaScript MIME type for module script/
+    expect(pageErrors.filter((e) => !transientMime.test(e))).toEqual([])
+  })
 })
