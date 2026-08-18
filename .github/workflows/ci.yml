@@ -80,3 +80,17 @@ jobs:
       - run: pnpm --filter rawscript-cli build
       - run: npx playwright install --with-deps webkit
       - run: npx playwright test --project=webkit --workers=1
+
+  bench:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v2
+        with:
+          version: 9
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: pnpm --filter rawscript-cli build
+      - run: npx playwright install --with-deps chromium
+      - run: pnpm bench
