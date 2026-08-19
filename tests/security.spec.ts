@@ -247,21 +247,24 @@ test.describe('dependency cache poisoning defense (roadmap item 26)', () => {
       //    controlled document (tolerating the navigation that claim
       //    aborts) and assert — no explicit reload, which would race the
       //    claim and abort with ERR_ABORTED.
+      const waitForControl = () =>
+        expect
+          .poll(
+            async () => {
+              try {
+                return await page.evaluate(() => !!navigator.serviceWorker.controller)
+              } catch {
+                return false // mid-navigation (claim abort) — keep polling
+              }
+            },
+            { timeout: 30_000 }
+          )
+          .toBe(true)
+
       writeIndex('./dep.js')
       writeFileSync(depFile, 'export const VALUE = 42')
       await page.goto(`http://127.0.0.1:${port}/`)
-      await expect
-        .poll(
-          async () => {
-            try {
-              return await page.evaluate(() => !!navigator.serviceWorker.controller)
-            } catch {
-              return false // mid-navigation (claim abort) — keep polling
-            }
-          },
-          { timeout: 30_000 }
-        )
-        .toBe(true)
+      await waitForControl()
       await expect(page.locator('#out')).toHaveText('poison: 42', { timeout: 60_000 })
 
       // 2. Poisoned upstream: the same URL now serves HTML. The cache-first
@@ -273,9 +276,19 @@ test.describe('dependency cache poisoning defense (roadmap item 26)', () => {
 
       // 3. With the cache cleared (fresh install), the poisoned HTML response
       //    must fail as a module (MIME) and must NOT enter the cache.
+      //
+      //    The reload below can race the SW's in-memory importmap: until the
+      //    page's handshake arrives, the SW serves the previous importmap
+      //    (./dep.js), and the fetch in that window can re-populate the
+      //    dependency cache with the stale body — or the claim reload can
+      //    abort the in-flight module fetch entirely. So after the reload we
+      //    wait for control, then reload once more: by then the SW holds the
+      //    page's actual importmap and the assertions are deterministic.
       await page.evaluate(() => caches.delete('rawscript-deps-v1'))
       writeIndex('./poisoned.html')
       writeFileSync(poisonedFile, '<html>fake dep</html>')
+      await page.reload()
+      await waitForControl()
       await page.reload()
       await expect(page.locator('#out')).not.toHaveText('poison:', { timeout: 60_000 })
       await expect.poll(() => pageErrors.some((e) => transientMime.test(e)), {
@@ -284,8 +297,15 @@ test.describe('dependency cache poisoning defense (roadmap item 26)', () => {
       }).toBe(true)
 
       // 4. Healthy again: renders, proving nothing was poisoned by step 3.
+      //    Clear the dependency cache first — the stale-map window in step 3
+      //    may legitimately have re-cached the old ./dep.js body (cache-first
+      //    is the documented design for dependencies), so the refetch must
+      //    start from an empty cache. Same control-then-reload dance.
+      await page.evaluate(() => caches.delete('rawscript-deps-v1'))
       writeIndex('./dep.js')
       writeFileSync(depFile, 'export const VALUE = 7')
+      await page.reload()
+      await waitForControl()
       await page.reload()
       await expect(page.locator('#out')).toHaveText('poison: 7', { timeout: 60_000 })
     } finally {
