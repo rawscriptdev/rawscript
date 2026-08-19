@@ -1057,6 +1057,40 @@ PHASE E — ADOPTION + DX
 39. Fix adoption blockers.
 40. Only then evaluate additional features.
 
+PHASE E STATUS — ADOPTION + DX
+------------------------------
+33. Documentation overhaul .......... DONE (docs/: PRODUCTION, TROUBLESHOOTING,
+                                             BROWSER-SUPPORT, SECURITY, BENCHMARKS;
+                                             README overhauled with a docs index)
+34. Reference applications .......... DONE (examples/ with per-app READMEs:
+                                             vanilla, react, preact, solid, vue,
+                                             three, offline-first; all render in CI)
+35. Benchmarks ...................... DONE (benchmarks/run.mjs measures cold/warm
+                                             load, compile miss/hit, memory, CLI
+                                             build; results published in
+                                             docs/BENCHMARKS.md; CI bench job)
+36. Troubleshooting guide ........... DONE (docs/TROUBLESHOOTING.md, aligned with
+                                             the structured error system)
+37. Browser/device validation ....... DONE (CI matrix: chromium/firefox/webkit,
+                                             72 e2e each; docs/BROWSER-SUPPORT.md;
+                                             iOS Safari/Android Chrome still
+                                             pending CI automation)
+38. Collect real-world feedback ..... DONE (issue templates: bug/feature; contact
+                                             config linking discussions + security)
+39. Fix adoption blockers ........... DONE (audit: README size claims corrected;
+                                             extensionless relative imports
+                                             documented as a browser-runtime
+                                             requirement)
+40. Only then evaluate additional
+   features ........................ OPEN (governance gate: no new features
+                                             until the above is verified by real
+                                             users; see section 35, VERSION 1.0
+                                             DEFINITION)
+
+Additional features are intentionally NOT added in this phase. The gate for
+evaluating new features is real-world usage evidence (section 35), not
+feature count (section 38).
+
 
 ================================================
 35. VERSION 1.0 DEFINITION
